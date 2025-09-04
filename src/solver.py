@@ -1,17 +1,22 @@
 """
-Hebrew Semantle Core Solver
+Hebrew Semantle Solver
 
-Main solving algorithm that combines API client and beam search
-to solve Hebrew Semantle puzzles within a 5-minute time limit.
+Main solving algorithm that uses beam search and API client to solve
+Hebrew Semantle puzzles with 5-minute timeout and intelligent exploration.
 """
 
 import time
 import logging
 from typing import List, Optional, Dict, Any
-import random
 
-from .api_client import SemantheAPIClient
-from .beam_search import BeamSearcher, WordCandidate
+try:
+    # Try relative imports first (when used as module)
+    from .api_client import SemantheAPIClient
+    from .beam_search import BeamSearcher, WordCandidate
+except ImportError:
+    # Fall back to absolute imports (when run as script)
+    from api_client import SemantheAPIClient
+    from beam_search import BeamSearcher, WordCandidate
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -19,325 +24,316 @@ logger = logging.getLogger(__name__)
 
 
 class SemantleSolver:
-    """Core solver for Hebrew Semantle puzzles using beam search algorithm"""
+    """Main solver for Hebrew Semantle puzzles"""
     
-    # Common Hebrew words to start exploration
-    INITIAL_HEBREW_WORDS = [
-        # High frequency Hebrew words
-        "שלום", "אהבה", "חיים", "בית", "משפחה", "חברים", "עבודה", "זמן",
-        "דרך", "יום", "לילה", "אור", "חושך", "שמח", "עצוב", "טוב",
-        "רע", "גדול", "קטן", "חדש", "ישן", "יפה", "מים", "אש",
-        "רוח", "אדמה", "שמים", "ירח", "שמש", "כוכבים", "ים", "הר",
-        "עיר", "כפר", "דלת", "חלון", "שולחן", "כסא", "ספר", "עט",
-        "נייר", "מחשב", "טלפון", "רכב", "אוטובוס", "רכבת", "מטוס"
-    ]
-    
-    def __init__(self, beam_width: int = 5, timeout_minutes: int = 5, 
-                 rate_limit_seconds: float = 2.0):
+    def __init__(self, beam_width: int = 5, timeout_seconds: int = 300):
         """
-        Initialize Semantle solver
+        Initialize the Semantle solver
         
         Args:
             beam_width: Number of top candidates to maintain in beam search
-            timeout_minutes: Maximum solving time in minutes (default: 5)
-            rate_limit_seconds: Seconds to wait between API calls (default: 2.0)
+            timeout_seconds: Maximum solving time in seconds (default: 5 minutes)
         """
+        self.beam_width = beam_width
+        self.timeout_seconds = timeout_seconds
         self.api_client = SemantheAPIClient()
         self.beam_searcher = BeamSearcher(beam_width=beam_width)
-        self.timeout_seconds = timeout_minutes * 60
-        self.rate_limit_seconds = rate_limit_seconds
         
-        # Rate limiting and backoff state
-        self.consecutive_rate_limit_errors = 0
-        self.current_backoff_delay = rate_limit_seconds
-        self.max_backoff_delay = 30.0  # Maximum 30 second delay
+        # Rate limiting settings
+        self.request_delay = 1.0  # Delay between API calls in seconds
+        self.last_request_time = 0.0
         
-        # Solving state
-        self.start_time = None
-        self.solve_complete = False
-        self.winning_word = None
+        # Solving statistics
+        self.start_time: Optional[float] = None
         self.total_guesses = 0
+        self.solution_found = False
+        self.solution_word: Optional[str] = None
         
-        logger.info(f"Initialized SemantleSolver: beam_width={beam_width}, "
-                   f"timeout={timeout_minutes}min, rate_limit={rate_limit_seconds}s")
+        logger.info(f"Initialized SemantleSolver with beam_width={beam_width}, timeout={timeout_seconds}s")
     
-    def is_timeout_reached(self) -> bool:
-        """Check if the 5-minute timeout has been reached"""
-        if self.start_time is None:
-            return False
-        return (time.time() - self.start_time) >= self.timeout_seconds
-    
-    def get_remaining_time(self) -> float:
-        """Get remaining time in seconds"""
-        if self.start_time is None:
-            return self.timeout_seconds
-        elapsed = time.time() - self.start_time
-        return max(0, self.timeout_seconds - elapsed)
-    
-    def handle_rate_limit_success(self):
-        """Reset rate limiting state after successful API call"""
-        self.consecutive_rate_limit_errors = 0
-        self.current_backoff_delay = self.rate_limit_seconds
-    
-    def handle_rate_limit_error(self):
-        """Handle rate limit error with exponential backoff"""
-        self.consecutive_rate_limit_errors += 1
-        # Exponential backoff: double the delay each time, up to max
-        self.current_backoff_delay = min(
-            self.current_backoff_delay * 2, 
-            self.max_backoff_delay
-        )
-        
-        logger.warning(f"Rate limit hit! Consecutive errors: {self.consecutive_rate_limit_errors}, "
-                      f"next delay: {self.current_backoff_delay:.1f}s")
-        
-        # Wait with the current backoff delay
-        time.sleep(self.current_backoff_delay)
-    
-    def get_current_delay(self) -> float:
-        """Get current delay to use for rate limiting"""
-        return self.current_backoff_delay
-    
-    def test_word(self, word: str) -> Optional[float]:
+    def _get_initial_word_list(self) -> List[str]:
         """
-        Test a word and add it to beam search if successful
+        Get list of common Hebrew words to start exploration
+        
+        Returns:
+            List of Hebrew words for initial guessing
+        """
+        # High-frequency Hebrew words for initial exploration
+        return [
+            "שלום", "חיים", "אהבה", "בית", "משפחה", "ישראל", "עולם", "יום",
+            "לילה", "אור", "חושך", "מים", "אש", "רוח", "אדמה", "שמיים",
+            "אדם", "אישה", "ילד", "ילדה", "אב", "אם", "אח", "אחות",
+            "עיר", "כפר", "דרך", "רחוב", "בית ספר", "עבודה", "כסף", "זמן"
+        ]
+    
+    def _respect_rate_limit(self):
+        """Ensure we don't overwhelm the API with requests"""
+        current_time = time.time()
+        time_since_last_request = current_time - self.last_request_time
+        
+        if time_since_last_request < self.request_delay:
+            sleep_time = self.request_delay - time_since_last_request
+            logger.debug(f"Rate limiting: sleeping for {sleep_time:.2f}s")
+            time.sleep(sleep_time)
+        
+        self.last_request_time = time.time()
+    
+    def _test_word(self, word: str) -> Optional[float]:
+        """
+        Test a word with rate limiting and error handling
         
         Args:
             word: Hebrew word to test
             
         Returns:
-            Similarity score if successful, None if failed
+            Similarity score or None if API call fails
         """
-        max_retries = 3
-        
-        for attempt in range(max_retries + 1):
-            try:
-                similarity = self.api_client.test_word_similarity(word)
-                
-                if similarity is not None:
-                    # Success! Reset rate limiting state
-                    self.handle_rate_limit_success()
-                    
-                    self.total_guesses += 1
-                    self.beam_searcher.add_candidate(word, similarity)
-                    
-                    # Check for winning condition
-                    if similarity >= 99.9:  # Allow for small floating point errors
-                        logger.info(f"🎉 FOUND WINNING WORD: {word} (similarity: {similarity:.2f})")
-                        self.winning_word = word
-                        self.solve_complete = True
-                        return similarity
-                    
-                    logger.info(f"Tested {word}: {similarity:.2f}% "
-                              f"(#{self.total_guesses}, {self.get_remaining_time():.0f}s left)")
-                    return similarity
-                else:
-                    # API returned None - check if it's a rate limit issue
-                    # For now, treat as failure and return None
-                    if attempt == max_retries:
-                        logger.warning(f"Failed to test word after {max_retries + 1} attempts: {word}")
-                    return None
-                    
-            except Exception as e:
-                error_str = str(e)
-                
-                # Check if this is a rate limit error (429)
-                if "429" in error_str or "Too Many Requests" in error_str:
-                    if attempt < max_retries:
-                        logger.warning(f"Rate limit hit for word '{word}', attempt {attempt + 1}/{max_retries + 1}")
-                        self.handle_rate_limit_error()
-                        
-                        # Check if we still have time to continue
-                        if self.is_timeout_reached():
-                            logger.warning(f"Timeout reached during rate limit backoff for word: {word}")
-                            return None
-                        continue
-                    else:
-                        logger.error(f"Rate limit exceeded for word '{word}' after {max_retries + 1} attempts")
-                        return None
-                else:
-                    # Other error - don't retry
-                    logger.error(f"Error testing word '{word}': {e}")
-                    return None
-        
-        return None
-    
-    def generate_exploration_words(self, count: int = 10) -> List[str]:
-        """
-        Generate words for exploration based on current beam search state
-        
-        Args:
-            count: Number of words to generate for exploration
-            
-        Returns:
-            List of Hebrew words to test next
-        """
-        exploration_words = []
-        
         try:
-            # Get top candidates from beam
-            top_candidates = self.beam_searcher.get_top_candidates()
+            self._respect_rate_limit()
+            similarity = self.api_client.test_word_similarity(word)
             
-            if not top_candidates:
-                # No beam candidates yet, use initial words
-                available_initial = [w for w in self.INITIAL_HEBREW_WORDS 
-                                   if not self.beam_searcher.is_word_tested(w)]
-                exploration_words.extend(random.sample(
-                    available_initial, 
-                    min(count, len(available_initial))
-                ))
+            if similarity is not None:
+                self.total_guesses += 1
+                logger.info(f"Guess #{self.total_guesses}: {word} → {similarity:.2f}")
+                
+                # Check if we found the solution (perfect match)
+                if similarity >= 99.99:  # Allow for floating point precision
+                    self.solution_found = True
+                    self.solution_word = word
+                    logger.info(f"🎉 SOLUTION FOUND: {word} (similarity: {similarity:.2f})")
+                
+                return similarity
             else:
-                # Generate variations based on top candidates
-                # For now, use a simple strategy: use untested initial words
-                # This can be enhanced with word similarity models later
-                available_initial = [w for w in self.INITIAL_HEBREW_WORDS 
-                                   if not self.beam_searcher.is_word_tested(w)]
-                exploration_words.extend(random.sample(
-                    available_initial, 
-                    min(count, len(available_initial))
-                ))
-            
-            logger.debug(f"Generated {len(exploration_words)} exploration words")
-            return exploration_words
-            
+                logger.warning(f"API call failed for word: {word}")
+                return None
+                
         except Exception as e:
-            logger.error(f"Error generating exploration words: {e}")
-            return []
+            logger.error(f"Error testing word '{word}': {e}")
+            return None
+    
+    def _has_time_remaining(self) -> bool:
+        """Check if we still have time remaining for solving"""
+        if self.start_time is None:
+            return True
+            
+        elapsed = time.time() - self.start_time
+        return elapsed < self.timeout_seconds
+    
+    def _get_elapsed_time(self) -> float:
+        """Get elapsed solving time in seconds"""
+        if self.start_time is None:
+            return 0.0
+        return time.time() - self.start_time
+    
+    def _expand_search_from_candidates(self) -> List[str]:
+        """
+        Generate new words to explore based on current best candidates
+        
+        This is a simplified expansion - in a full implementation,
+        this would use word embeddings or linguistic patterns
+        
+        Returns:
+            List of new words to explore
+        """
+        top_candidates = self.beam_searcher.get_top_candidates(count=3)
+        expansion_words = []
+        
+        # For now, use a simple heuristic - could be enhanced with word2vec later
+        # This is a placeholder that would be improved in Unit 4 with proper word embeddings
+        hebrew_word_variations = [
+            "דבר", "מילה", "טוב", "רע", "גדול", "קטן", "חדש", "ישן",
+            "לבן", "שחור", "אדום", "ירוק", "כחול", "צהוב", "חם", "קר",
+            "מהיר", "איטי", "חזק", "חלש", "יפה", "מכוער", "חכם", "טיפש"
+        ]
+        
+        # Filter out already tested words
+        for word in hebrew_word_variations:
+            if not self.beam_searcher.is_word_tested(word):
+                expansion_words.append(word)
+                if len(expansion_words) >= 5:  # Limit expansion size
+                    break
+        
+        return expansion_words
     
     def solve(self) -> Dict[str, Any]:
         """
-        Main solving algorithm with 5-minute timeout
+        Solve the current Hebrew Semantle puzzle
         
         Returns:
             Dictionary with solving results and statistics
         """
-        logger.info("🚀 Starting Hebrew Semantle solver...")
-        self.start_time = time.time()
-        
         try:
-            # Initial exploration with common Hebrew words
-            initial_batch_size = min(10, len(self.INITIAL_HEBREW_WORDS))
-            initial_words = random.sample(self.INITIAL_HEBREW_WORDS, initial_batch_size)
+            logger.info("Starting Hebrew Semantle solver...")
+            self.start_time = time.time()
             
-            logger.info(f"Testing initial batch of {len(initial_words)} common Hebrew words...")
+            # Phase 1: Test initial word list
+            initial_words = self._get_initial_word_list()
+            logger.info(f"Phase 1: Testing {len(initial_words)} initial words")
+            
             for word in initial_words:
-                if self.solve_complete or self.is_timeout_reached():
+                if not self._has_time_remaining():
+                    logger.info("Timeout reached during initial word testing")
                     break
                 
-                self.test_word(word)
-                # Use current backoff delay for rate limiting
-                time.sleep(self.get_current_delay())
+                if self.beam_searcher.is_word_tested(word):
+                    continue
+                
+                similarity = self._test_word(word)
+                if similarity is not None:
+                    self.beam_searcher.add_candidate(word, similarity)
+                    
+                    if self.solution_found:
+                        break
             
-            # Main exploration loop
-            while not self.solve_complete and not self.is_timeout_reached():
-                # Generate next batch of exploration words
-                exploration_words = self.generate_exploration_words(count=5)
+            # Phase 2: Beam search exploration
+            if not self.solution_found and self._has_time_remaining():
+                logger.info("Phase 2: Beam search exploration")
                 
-                if not exploration_words:
-                    logger.warning("No more words to explore, stopping solver")
-                    break
+                exploration_rounds = 0
+                max_exploration_rounds = 10  # Prevent infinite loops
                 
-                # Test exploration words
-                for word in exploration_words:
-                    if self.solve_complete or self.is_timeout_reached():
+                while (not self.solution_found and 
+                       self._has_time_remaining() and 
+                       exploration_rounds < max_exploration_rounds):
+                    
+                    exploration_rounds += 1
+                    logger.info(f"Exploration round {exploration_rounds}")
+                    
+                    # Get words to explore based on current candidates
+                    expansion_words = self._expand_search_from_candidates()
+                    
+                    if not expansion_words:
+                        logger.info("No new words to explore - search exhausted")
                         break
                     
-                    if not self.beam_searcher.is_word_tested(word):
-                        self.test_word(word)
-                        # Use current backoff delay for rate limiting
-                        time.sleep(self.get_current_delay())
-                
-                # Show progress every few iterations
-                status = self.beam_searcher.get_beam_status()
-                logger.info(f"Progress: {status['tested_count']} words tested, "
-                          f"best: {status['best_word']} ({status['best_similarity']:.2f}%), "
-                          f"time remaining: {self.get_remaining_time():.0f}s")
+                    # Test expansion words
+                    for word in expansion_words:
+                        if not self._has_time_remaining():
+                            logger.info("Timeout reached during exploration")
+                            break
+                        
+                        similarity = self._test_word(word)
+                        if similarity is not None:
+                            self.beam_searcher.add_candidate(word, similarity)
+                            
+                            if self.solution_found:
+                                break
+                    
+                    # Show progress
+                    status = self.beam_searcher.get_beam_status()
+                    logger.info(f"Progress: {status['tested_count']} words tested, "
+                              f"best: {status['best_word']} ({status['best_similarity']:.2f})")
             
-        except KeyboardInterrupt:
-            logger.info("🛑 Solving interrupted by user")
-        except Exception as e:
-            logger.error(f"Error during solving: {e}")
-        finally:
-            # Calculate final statistics
-            end_time = time.time()
-            total_time = end_time - self.start_time
+            # Compile results
+            elapsed_time = self._get_elapsed_time()
+            beam_status = self.beam_searcher.get_beam_status()
             
-            status = self.beam_searcher.get_beam_status()
-            
-            result = {
-                'success': self.solve_complete,
-                'winning_word': self.winning_word,
-                'total_time_seconds': total_time,
+            results = {
+                'success': self.solution_found,
+                'solution_word': self.solution_word,
                 'total_guesses': self.total_guesses,
-                'timeout_reached': self.is_timeout_reached(),
-                'best_word': status['best_word'],
-                'best_similarity': status['best_similarity'],
-                'words_tested': status['tested_count']
+                'elapsed_time': elapsed_time,
+                'timeout_reached': elapsed_time >= self.timeout_seconds,
+                'best_candidate': {
+                    'word': beam_status['best_word'],
+                    'similarity': beam_status['best_similarity']
+                },
+                'words_tested': beam_status['tested_count'],
+                'beam_size': beam_status['beam_size']
             }
             
             # Log final results
-            if self.solve_complete:
-                logger.info(f"🎉 SUCCESS! Found winning word: {self.winning_word}")
-                logger.info(f"   Time: {total_time:.1f}s, Guesses: {self.total_guesses}")
-            elif self.is_timeout_reached():
-                logger.info(f"⏰ TIMEOUT after {total_time:.1f}s")
-                logger.info(f"   Best word: {status['best_word']} ({status['best_similarity']:.2f}%)")
-                logger.info(f"   Total guesses: {self.total_guesses}")
+            if self.solution_found:
+                logger.info(f"🎉 PUZZLE SOLVED! Word: {self.solution_word} in {self.total_guesses} guesses")
+                logger.info(f"⏱️  Total time: {elapsed_time:.1f}s")
             else:
-                logger.info(f"🛑 STOPPED after {total_time:.1f}s")
-                logger.info(f"   Best word: {status['best_word']} ({status['best_similarity']:.2f}%)")
-                logger.info(f"   Total guesses: {self.total_guesses}")
+                logger.info(f"❌ Puzzle not solved within {self.timeout_seconds}s timeout")
+                logger.info(f"🥈 Best candidate: {beam_status['best_word']} ({beam_status['best_similarity']:.2f})")
+                logger.info(f"📊 Total guesses: {self.total_guesses}")
             
-            return result
-    
-    def cleanup(self):
-        """Clean up resources"""
-        try:
-            self.api_client.close()
-            logger.info("Solver cleanup completed")
+            return results
+            
         except Exception as e:
-            logger.error(f"Error during cleanup: {e}")
+            logger.error(f"Error during solving: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'total_guesses': self.total_guesses,
+                'elapsed_time': self._get_elapsed_time()
+            }
+        
+        finally:
+            # Clean up
+            self.api_client.close()
+    
+    def get_solving_status(self) -> Dict[str, Any]:
+        """
+        Get current solving status and progress
+        
+        Returns:
+            Dictionary with current solving statistics
+        """
+        beam_status = self.beam_searcher.get_beam_status()
+        
+        return {
+            'elapsed_time': self._get_elapsed_time(),
+            'total_guesses': self.total_guesses,
+            'solution_found': self.solution_found,
+            'solution_word': self.solution_word,
+            'time_remaining': max(0, self.timeout_seconds - self._get_elapsed_time()),
+            'best_candidate': {
+                'word': beam_status['best_word'],
+                'similarity': beam_status['best_similarity']
+            },
+            'words_tested': beam_status['tested_count']
+        }
 
 
 def main():
-    """Main entry point for the Hebrew Semantle solver"""
-    print("🔤 Hebrew Semantle Solver")
+    """Test the complete solver with Hebrew Semantle"""
+    print("Hebrew Semantle Solver")
     print("=" * 50)
-    print("Starting puzzle solver with 5-minute timeout...")
-    print("Press Ctrl+C to stop early")
+    print("🎯 Starting puzzle solver...")
+    print("⏱️  Timeout: 5 minutes")
+    print("🔍 Strategy: Beam search with common Hebrew words")
     print("=" * 50)
-    
-    solver = SemantleSolver()
     
     try:
-        result = solver.solve()
+        # Create solver with default settings
+        solver = SemantleSolver(beam_width=5, timeout_seconds=300)
         
+        # Solve the puzzle
+        results = solver.solve()
+        
+        # Display results
         print("\n" + "=" * 50)
-        print("📊 FINAL RESULTS")
+        print("FINAL RESULTS")
         print("=" * 50)
         
-        if result['success']:
-            print(f"✅ SUCCESS! Word found: {result['winning_word']}")
-            print(f"🕐 Time taken: {result['total_time_seconds']:.1f} seconds")
-            print(f"🎯 Total guesses: {result['total_guesses']}")
+        if results['success']:
+            print(f"🎉 SUCCESS! Solution found: {results['solution_word']}")
+            print(f"📊 Total guesses: {results['total_guesses']}")
+            print(f"⏱️  Time taken: {results['elapsed_time']:.1f} seconds")
         else:
-            if result['timeout_reached']:
-                print(f"⏰ Timeout reached (5 minutes)")
-            else:
-                print(f"🛑 Stopped early")
+            print(f"❌ Puzzle not solved")
+            if results.get('timeout_reached'):
+                print("⏰ Reason: 5-minute timeout reached")
             
-            print(f"🎯 Total guesses: {result['total_guesses']}")
-            print(f"🏆 Best word found: {result['best_word']} ({result['best_similarity']:.2f}%)")
-            print(f"🕐 Time elapsed: {result['total_time_seconds']:.1f} seconds")
+            best = results.get('best_candidate', {})
+            if best.get('word'):
+                print(f"🥈 Best candidate: {best['word']} (similarity: {best['similarity']:.2f})")
+            
+            print(f"📊 Total guesses: {results['total_guesses']}")
+            print(f"⏱️  Time elapsed: {results['elapsed_time']:.1f} seconds")
         
-        print(f"📈 Words tested: {result['words_tested']}")
+        print(f"🔍 Words tested: {results['words_tested']}")
         print("=" * 50)
         
+    except KeyboardInterrupt:
+        print("\n\n🛑 Solver interrupted by user")
     except Exception as e:
-        logger.error(f"Fatal error in main: {e}")
-        print(f"\n❌ Fatal error: {e}")
-    finally:
-        solver.cleanup()
+        logger.error(f"Solver failed: {e}")
+        print(f"❌ Solver failed: {e}")
 
 
 if __name__ == "__main__":
