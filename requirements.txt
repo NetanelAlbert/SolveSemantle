@@ -1,0 +1,2 @@
+requests>=2.28.0
+gensim>=4.3.0
