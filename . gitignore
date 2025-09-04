@@ -1,0 +1,11 @@
+# planner
+scratchpads/
+
+# vscode
+.vscode/
+
+# python
+__pycache__/
+
+# macos
+.DS_Store
