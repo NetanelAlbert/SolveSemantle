@@ -15,12 +15,14 @@ try:
     from .beam_search import BeamSearcher, WordCandidate
     from .language_model import HebrewLanguageModel
     from .hebrew_utils import format_hebrew_output
+    from .learning_system import ContextualLearningSystem
 except ImportError:
     # Fall back to absolute imports (when run as script)
     from api_client import SemantheAPIClient
     from beam_search import BeamSearcher, WordCandidate
     from language_model import HebrewLanguageModel
     from hebrew_utils import format_hebrew_output
+    from learning_system import ContextualLearningSystem
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -30,18 +32,20 @@ logger = logging.getLogger(__name__)
 class SemantleSolver:
     """Main solver for Hebrew Semantle puzzles"""
     
-    def __init__(self, beam_width: int = 5, timeout_seconds: int = 300, use_language_model: bool = True):
+    def __init__(self, beam_width: int = 5, timeout_seconds: int = 300, use_language_model: bool = True, enable_learning: bool = True):
         """
-        Initialize the Semantle solver
+        Initialize the Semantle solver with contextual learning
         
         Args:
             beam_width: Number of top candidates to maintain in beam search
             timeout_seconds: Maximum solving time in seconds (default: 5 minutes)
             use_language_model: Whether to use Word2Vec model for intelligent exploration
+            enable_learning: Whether to enable contextual learning system
         """
         self.beam_width = beam_width
         self.timeout_seconds = timeout_seconds
         self.use_language_model = use_language_model
+        self.enable_learning = enable_learning
         
         # Initialize components
         self.api_client = SemantheAPIClient()
@@ -52,6 +56,12 @@ class SemantleSolver:
             max_beam_width=min(12, beam_width + 5)   # Adaptive maximum
         )
         
+        # Initialize contextual learning system
+        if self.enable_learning:
+            self.learning_system = ContextualLearningSystem()
+        else:
+            self.learning_system = None
+
         # Initialize language model if requested
         self.language_model = None
         if use_language_model:
@@ -76,7 +86,14 @@ class SemantleSolver:
         self.solution_found = False
         self.solution_word: Optional[str] = None
         
-        strategy = "Word2Vec + Beam Search" if self.language_model else "Basic Beam Search"
+        strategy_parts = []
+        if self.language_model:
+            strategy_parts.append("Word2Vec")
+        strategy_parts.append("Enhanced Beam Search") 
+        if self.enable_learning:
+            strategy_parts.append("Learning")
+        
+        strategy = " + ".join(strategy_parts)
         logger.info(f"Initialized SemantleSolver with {strategy}, beam_width={beam_width}, timeout={timeout_seconds}s")
     
     def _get_initial_word_list(self) -> List[str]:
@@ -106,37 +123,61 @@ class SemantleSolver:
         
         self.last_request_time = time.time()
     
-    def _test_word(self, word: str) -> Optional[float]:
+    def _test_word(self, word: str, parent_candidate: Optional[str] = None, parent_similarity: float = 0.0, strategy_used: str = 'unknown') -> Optional[float]:
         """
-        Test a word with rate limiting and error handling
+        Test a single word and record learning patterns
         
         Args:
             word: Hebrew word to test
+            parent_candidate: The candidate word that suggested this word (for learning)
+            parent_similarity: Similarity score of the parent candidate
+            strategy_used: Strategy that generated this word suggestion
             
         Returns:
-            Similarity score or None if API call fails
+            Similarity score if successful, None if failed
         """
         try:
-            self._respect_rate_limit()
-            similarity = self.api_client.test_word_similarity(word)
+            logger.debug(f"Testing word: {word}")
+            
+            # Apply rate limiting
+            current_time = time.time()
+            time_since_last = current_time - self.last_request_time
+            if time_since_last < self.request_delay:
+                time.sleep(self.request_delay - time_since_last)
+            
+            # Make API request
+            similarity = self.api_client.get_word_similarity(word)
+            self.last_request_time = time.time()
+            self.total_guesses += 1
             
             if similarity is not None:
-                self.total_guesses += 1
                 logger.info(f"Guess #{self.total_guesses}: {format_hebrew_output(word)} → {similarity:.2f}")
                 
-                # Check if we found the solution (perfect match)
-                if similarity >= 99.99:  # Allow for floating point precision
+                # Record learning pattern if learning is enabled
+                if self.learning_system and parent_candidate:
+                    search_phase = self._determine_search_phase()
+                    self.learning_system.record_search_pattern(
+                        candidate_word=parent_candidate,
+                        candidate_similarity=parent_similarity,
+                        suggested_word=word,
+                        suggestion_similarity=similarity,
+                        search_phase=search_phase,
+                        strategy_used=strategy_used
+                    )
+                
+                # Check if solution found (similarity 100)
+                if similarity >= 100.0:
                     self.solution_found = True
                     self.solution_word = word
-                    logger.info(f"🎉 SOLUTION FOUND: {format_hebrew_output(word)} (similarity: {similarity:.2f})")
+                    logger.info(f"🎉 SOLUTION FOUND: {format_hebrew_output(word)}")
                 
                 return similarity
             else:
-                logger.warning(f"API call failed for word: {format_hebrew_output(word)}")
+                logger.warning(f"API call failed for word: {word}")
                 return None
                 
         except Exception as e:
-            logger.error(f"Error testing word '{format_hebrew_output(word)}': {e}")
+            logger.error(f"Error testing word '{word}': {e}")
             return None
     
     def _has_time_remaining(self) -> bool:
@@ -216,32 +257,49 @@ class SemantleSolver:
         Generate new words to explore based on current best candidates
         
         Uses multi-strategy word generation with morphological patterns, semantic clustering,
-        frequency-based prioritization, and adaptive strategy weighting.
+        frequency-based prioritization, adaptive strategy weighting, and contextual learning.
         
         Returns:
-            List of words to explore, prioritized by parent candidate similarity
+            List of words to explore, prioritized by parent candidate similarity and learning
         """
         top_candidates = self.beam_searcher.get_top_candidates(count=3)
         word_tuples = []
         
-        # Strategy 1: Use enhanced multi-strategy word generation
+        # Strategy 1: Use enhanced multi-strategy word generation with learning
         if self.language_model and top_candidates:
-            logger.debug("Using multi-strategy word generation with morphological patterns")
+            logger.debug("Using multi-strategy word generation with morphological patterns and learning")
             
             # Determine current search phase
             search_phase = self._determine_search_phase()
+            
+            # Update puzzle classification in learning system
+            if self.learning_system:
+                beam_status = self.beam_searcher.get_beam_status()
+                self.learning_system.current_puzzle_type = self.learning_system.classify_puzzle_type(beam_status)
             
             # Get candidate words for the language model
             candidate_words = [candidate.word for candidate in top_candidates]
             tested_words = self.beam_searcher.tested_words.copy()
             
-            # Use new multi-strategy word generation
+            # Use multi-strategy word generation with adaptive weighting
+            if self.language_model.current_search_phase != search_phase:
+                self.language_model.current_search_phase = search_phase
+            
             suggested_words = self.language_model.get_multi_strategy_word_suggestions(
                 current_candidates=candidate_words,
                 tested_words=tested_words,
                 search_phase=search_phase,
                 count=10  # Generate more words for better prioritization
             )
+            
+            # Get learned suggestions from historical patterns
+            learned_suggestions = []
+            if self.learning_system:
+                learned_suggestions = self.learning_system.get_learned_suggestions(
+                    current_candidates=candidate_words,
+                    search_phase=search_phase,
+                    count=3
+                )
             
             # Track parent similarity for priority-based ordering
             for candidate in top_candidates:
@@ -252,7 +310,15 @@ class SemantleSolver:
                 
                 for word in single_suggestions:
                     if not self.beam_searcher.is_word_tested(word):
-                        word_tuples.append((word, candidate.similarity))
+                        # Apply learning-based weight adjustment
+                        base_similarity = candidate.similarity
+                        if self.learning_system:
+                            adaptive_weight = self.learning_system.get_adaptive_word_weight(word)
+                            adjusted_similarity = base_similarity * adaptive_weight
+                        else:
+                            adjusted_similarity = base_similarity
+                        
+                        word_tuples.append((word, adjusted_similarity, candidate.word, 'semantic'))
                         if len(word_tuples) >= 8:
                             break
                 
@@ -261,19 +327,51 @@ class SemantleSolver:
             
             # Add multi-strategy words with composite parent similarity
             for word in suggested_words:
-                if not self.beam_searcher.is_word_tested(word) and word not in [w for w, _ in word_tuples]:
+                if not self.beam_searcher.is_word_tested(word) and word not in [w for w, _, _, _ in word_tuples]:
                     # Calculate average parent similarity for multi-strategy words
                     avg_parent_similarity = sum(c.similarity for c in top_candidates) / len(top_candidates)
-                    word_tuples.append((word, avg_parent_similarity * 0.9))  # Slight penalty for mixed strategy
+                    
+                    # Apply learning-based weight adjustment
+                    if self.learning_system:
+                        adaptive_weight = self.learning_system.get_adaptive_word_weight(word)
+                        adjusted_similarity = avg_parent_similarity * 0.9 * adaptive_weight  # Slight penalty for mixed strategy
+                    else:
+                        adjusted_similarity = avg_parent_similarity * 0.9
+                    
+                    # Use average parent as representative
+                    avg_parent_word = top_candidates[0].word if top_candidates else 'unknown'
+                    word_tuples.append((word, adjusted_similarity, avg_parent_word, 'multi-strategy'))
                     if len(word_tuples) >= 12:
                         break
             
+            # Add learned suggestions with high priority
+            for learned_word, relevance in learned_suggestions:
+                if (not self.beam_searcher.is_word_tested(learned_word) and 
+                    learned_word not in [w for w, _, _, _ in word_tuples]):
+                    # Learned suggestions get high priority
+                    learned_similarity = relevance * 100.0  # Scale relevance to similarity range
+                    best_parent = top_candidates[0].word if top_candidates else 'learned'
+                    word_tuples.append((learned_word, learned_similarity, best_parent, 'learned'))
+            
             # If we got good suggestions, prioritize and return them
             if word_tuples:
-                prioritized_words = self._create_prioritized_word_queue(word_tuples)
-                logger.info(f"Generated {len(prioritized_words)} multi-strategy suggestions "
+                # Convert tuples to (word, similarity) format for prioritization
+                prioritization_tuples = [(word, similarity) for word, similarity, _, _ in word_tuples]
+                prioritized_words = self._create_prioritized_word_queue(prioritization_tuples)
+                
+                # Create enhanced word list with metadata for learning
+                enhanced_words = []
+                word_metadata = {word: (parent, strategy) for word, _, parent, strategy in word_tuples}
+                
+                for word in prioritized_words:
+                    enhanced_words.append(word)
+                
+                # Store metadata for learning integration
+                self._word_generation_metadata = word_metadata
+                
+                logger.info(f"Generated {len(enhanced_words)} multi-strategy + learning suggestions "
                            f"with priority ordering (phase: {search_phase})")
-                return prioritized_words
+                return enhanced_words
         
         # Strategy 2: Fallback to basic expansion (expanded word list)
         logger.debug("Using fallback word expansion strategy")
@@ -296,11 +394,15 @@ class SemantleSolver:
         ]
         
         # Filter out already tested words and assign default similarity of 0.0
+        word_tuples = []
         for word in hebrew_word_variations:
             if not self.beam_searcher.is_word_tested(word):
                 word_tuples.append((word, 0.0))  # Default parent similarity for fallback words
                 if len(word_tuples) >= 12:  # Increased expansion size for better coverage
                     break
+        
+        # Store empty metadata for fallback
+        self._word_generation_metadata = {}
         
         # Prioritize even fallback words (though they all have same priority)
         return self._create_prioritized_word_queue(word_tuples)
