@@ -32,25 +32,124 @@ class WordCandidate:
 
 
 class BeamSearcher:
-    """Beam search system for efficient word exploration in Hebrew Semantle"""
+    """Enhanced beam search system with dynamic width and smart candidate selection"""
     
-    def __init__(self, beam_width: int = 5):
+    def __init__(self, beam_width: int = 5, min_beam_width: int = 2, max_beam_width: int = 8):
         """
-        Initialize beam search system
+        Initialize enhanced beam search system
         
         Args:
-            beam_width: Maximum number of candidates to maintain in beam (default: 5)
+            beam_width: Initial beam width (default: 5)
+            min_beam_width: Minimum beam width for contraction (default: 2)
+            max_beam_width: Maximum beam width for expansion (default: 8)
         """
-        self.beam_width = max(1, beam_width)  # Ensure at least 1 candidate
+        self.initial_beam_width = max(1, beam_width)
+        self.min_beam_width = max(1, min_beam_width)
+        self.max_beam_width = max(beam_width, max_beam_width)
+        self.current_beam_width = self.initial_beam_width
+        
         self.tested_words: Set[str] = set()
         self.current_beam: List[WordCandidate] = []
         self.best_candidate: Optional[WordCandidate] = None
         
-        logger.info(f"Initialized BeamSearcher with beam width: {self.beam_width}")
+        # Progress tracking for dynamic adjustment
+        self.similarity_history: List[float] = []
+        self.recent_improvements = 0
+        self.stagnation_count = 0
+        self.last_best_similarity = 0.0
+        
+        # Diversity thresholds
+        self.min_diversity_threshold = 0.3  # Minimum semantic diversity to maintain
+        
+        logger.info(f"Initialized Enhanced BeamSearcher - initial width: {self.current_beam_width}, "
+                   f"range: [{self.min_beam_width}, {self.max_beam_width}]")
     
+    def _calculate_semantic_diversity(self, new_candidate: WordCandidate) -> float:
+        """
+        Calculate semantic diversity score for a new candidate
+        
+        Higher diversity means the candidate is semantically different from existing beam.
+        This is a simplified heuristic based on word length and character differences.
+        
+        Args:
+            new_candidate: Candidate to evaluate for diversity
+            
+        Returns:
+            Diversity score between 0.0 (low diversity) and 1.0 (high diversity)
+        """
+        if not self.current_beam:
+            return 1.0  # Maximum diversity for first candidate
+        
+        # Calculate average character-based diversity
+        total_diversity = 0.0
+        for existing_candidate in self.current_beam:
+            # Simple string-based diversity metric (can be enhanced with embeddings)
+            word_diff = abs(len(new_candidate.word) - len(existing_candidate.word))
+            char_diff = len(set(new_candidate.word) - set(existing_candidate.word))
+            
+            # Normalize diversity score
+            diversity = (word_diff + char_diff) / (len(new_candidate.word) + len(existing_candidate.word) + 1)
+            total_diversity += diversity
+        
+        avg_diversity = total_diversity / len(self.current_beam)
+        return min(1.0, avg_diversity)  # Cap at 1.0
+    
+    def _update_progress_tracking(self, similarity: float):
+        """
+        Update progress tracking metrics for dynamic beam adjustment
+        
+        Args:
+            similarity: Latest similarity score achieved
+        """
+        self.similarity_history.append(similarity)
+        
+        # Check for improvement
+        if similarity > self.last_best_similarity:
+            self.recent_improvements += 1
+            self.stagnation_count = 0
+            self.last_best_similarity = similarity
+        else:
+            self.stagnation_count += 1
+            # Reset improvement counter if no progress for a while
+            if self.stagnation_count >= 3:
+                self.recent_improvements = 0
+    
+    def _adjust_beam_width(self, similarity: float):
+        """
+        Dynamically adjust beam width based on search progress
+        
+        Args:
+            similarity: Current similarity score
+        """
+        old_width = self.current_beam_width
+        
+        # Expand beam when finding high-similarity words (exploration)
+        if similarity >= 60.0 and self.current_beam_width < self.max_beam_width:
+            self.current_beam_width = min(self.max_beam_width, self.current_beam_width + 1)
+            logger.debug(f"Beam expanded to {self.current_beam_width} (high similarity: {similarity:.2f})")
+        
+        # Contract beam when stagnating (exploitation)
+        elif self.stagnation_count >= 5 and self.current_beam_width > self.min_beam_width:
+            self.current_beam_width = max(self.min_beam_width, self.current_beam_width - 1)
+            logger.debug(f"Beam contracted to {self.current_beam_width} (stagnation: {self.stagnation_count})")
+        
+        # Adjust current beam size if width changed
+        if self.current_beam_width != old_width:
+            self._resize_current_beam()
+    
+    def _resize_current_beam(self):
+        """Resize current beam to match new beam width"""
+        if len(self.current_beam) > self.current_beam_width:
+            # Keep only the best candidates when contracting
+            self.current_beam = sorted(self.current_beam, key=lambda c: c.similarity, reverse=True)[:self.current_beam_width]
+            logger.debug(f"Beam resized to {self.current_beam_width} candidates")
+
+
     def add_candidate(self, word: str, similarity: float) -> bool:
         """
-        Add a new word candidate to the beam search
+        Add a new word candidate with enhanced beam management
+        
+        Uses dynamic beam width and diversity-aware replacement strategy.
         
         Args:
             word: Hebrew word tested
@@ -71,33 +170,75 @@ class BeamSearcher:
             # Create candidate
             candidate = WordCandidate(word, similarity)
             
+            # Update progress tracking
+            self._update_progress_tracking(similarity)
+            
             # Update best candidate
             if self.best_candidate is None or similarity > self.best_candidate.similarity:
                 self.best_candidate = candidate
                 logger.info(f"New best candidate: {format_hebrew_output(word)} (similarity: {similarity:.2f})")
             
-            # Add to beam if there's space or if better than worst in beam
-            if len(self.current_beam) < self.beam_width:
+            # Dynamic beam width adjustment
+            self._adjust_beam_width(similarity)
+            
+            # Add to beam with smart replacement logic
+            if len(self.current_beam) < self.current_beam_width:
                 self.current_beam.append(candidate)
                 logger.debug(f"Added candidate to beam: {word} (similarity: {similarity:.2f})")
                 return True
             else:
-                # Find worst candidate in beam
-                worst_idx = min(range(len(self.current_beam)), 
-                              key=lambda i: self.current_beam[i].similarity)
-                worst_candidate = self.current_beam[worst_idx]
-                
-                # Replace if current candidate is better
-                if similarity > worst_candidate.similarity:
-                    self.current_beam[worst_idx] = candidate
-                    logger.debug(f"Replaced candidate in beam: {worst_candidate.word} -> {word}")
-                    return True
-                else:
-                    logger.debug(f"Candidate rejected (below beam threshold): {word}")
-                    return False
+                # Smart replacement considering diversity
+                return self._smart_replace_candidate(candidate)
                     
         except Exception as e:
             logger.error(f"Error adding candidate '{word}': {e}")
+            return False
+    
+    def _smart_replace_candidate(self, new_candidate: WordCandidate) -> bool:
+        """
+        Smart candidate replacement considering both similarity and diversity
+        
+        Args:
+            new_candidate: Candidate to potentially add to beam
+            
+        Returns:
+            True if candidate was added, False if rejected
+        """
+        # Calculate diversity of new candidate
+        diversity_score = self._calculate_semantic_diversity(new_candidate)
+        
+        # Find worst candidate in beam
+        worst_idx = min(range(len(self.current_beam)), 
+                       key=lambda i: self.current_beam[i].similarity)
+        worst_candidate = self.current_beam[worst_idx]
+        
+        # Replace if significantly better similarity or if improves diversity
+        similarity_improvement = new_candidate.similarity - worst_candidate.similarity
+        
+        should_replace = False
+        replacement_reason = ""
+        
+        # Always replace if significantly better similarity
+        if similarity_improvement > 5.0:
+            should_replace = True
+            replacement_reason = "similarity improvement"
+        
+        # Replace if better similarity AND good diversity
+        elif similarity_improvement > 0.0 and diversity_score >= self.min_diversity_threshold:
+            should_replace = True
+            replacement_reason = "similarity + diversity"
+        
+        # Replace if much better diversity even with slightly lower similarity
+        elif diversity_score > 0.7 and similarity_improvement > -2.0:
+            should_replace = True
+            replacement_reason = "high diversity"
+        
+        if should_replace:
+            self.current_beam[worst_idx] = new_candidate
+            logger.debug(f"Smart replacement ({replacement_reason}): {worst_candidate.word} -> {new_candidate.word}")
+            return True
+        else:
+            logger.debug(f"Candidate rejected (insufficient improvement): {new_candidate.word}")
             return False
     
     def get_top_candidates(self, count: Optional[int] = None) -> List[WordCandidate]:
@@ -142,17 +283,23 @@ class BeamSearcher:
     
     def get_beam_status(self) -> Dict[str, any]:
         """
-        Get current beam search status and statistics
+        Get enhanced beam search status and statistics
         
         Returns:
-            Dictionary with beam statistics
+            Dictionary with beam statistics including dynamic adjustments
         """
         return {
             'tested_count': len(self.tested_words),
             'beam_size': len(self.current_beam),
-            'beam_width': self.beam_width,
+            'beam_width': self.current_beam_width,
+            'initial_beam_width': self.initial_beam_width,
+            'beam_width_range': f"[{self.min_beam_width}, {self.max_beam_width}]",
             'best_similarity': self.best_candidate.similarity if self.best_candidate else 0.0,
-            'best_word': self.best_candidate.word if self.best_candidate else None
+            'best_word': self.best_candidate.word if self.best_candidate else None,
+            'recent_improvements': self.recent_improvements,
+            'stagnation_count': self.stagnation_count,
+            'strategy': 'exploration' if self.current_beam_width > self.initial_beam_width else 
+                       'exploitation' if self.current_beam_width < self.initial_beam_width else 'balanced'
         }
     
     def clear_beam(self):

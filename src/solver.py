@@ -45,7 +45,12 @@ class SemantleSolver:
         
         # Initialize components
         self.api_client = SemantheAPIClient()
-        self.beam_searcher = BeamSearcher(beam_width=beam_width)
+        # Enhanced beam searcher with dynamic width adjustment
+        self.beam_searcher = BeamSearcher(
+            beam_width=beam_width,
+            min_beam_width=max(2, beam_width - 3),  # Adaptive minimum
+            max_beam_width=min(12, beam_width + 5)   # Adaptive maximum
+        )
         
         # Initialize language model if requested
         self.language_model = None
@@ -324,11 +329,13 @@ class SemantleSolver:
                             if self.solution_found:
                                 break
                     
-                    # Show progress
+                    # Show progress with enhanced beam search metrics
                     status = self.beam_searcher.get_beam_status()
                     best_word_display = format_hebrew_output(status['best_word']) if status['best_word'] else 'None'
                     logger.info(f"Progress: {status['tested_count']} words tested, "
-                              f"best: {best_word_display} ({status['best_similarity']:.2f})")
+                              f"best: {best_word_display} ({status['best_similarity']:.2f}), "
+                              f"beam: {status['beam_size']}/{status['beam_width']}, "
+                              f"strategy: {status['strategy']}")
             
             # Compile results
             elapsed_time = self._get_elapsed_time()
@@ -346,7 +353,10 @@ class SemantleSolver:
                 },
                 'words_tested': beam_status['tested_count'],
                 'beam_size': beam_status['beam_size'],
-                'strategy_used': "Word2Vec + Beam Search" if self.language_model else "Basic Beam Search",
+                'beam_width_final': beam_status['beam_width'],
+                'beam_width_range': beam_status['beam_width_range'],
+                'search_strategy': beam_status['strategy'],
+                'strategy_used': "Word2Vec + Enhanced Beam Search" if self.language_model else "Enhanced Beam Search",
                 'language_model_loaded': self.language_model is not None
             }
             
@@ -356,7 +366,8 @@ class SemantleSolver:
                 logger.info(f"⏱️  Total time: {elapsed_time:.1f}s")
             else:
                 total_time = time.time() - self.start_time
-                logger.info(f"❌ Puzzle not solved within {total_time:.1f}s and  {exploration_rounds} exploration rounds")
+                exploration_rounds = locals().get('exploration_rounds', 0)
+                logger.info(f"❌ Puzzle not solved within {total_time:.1f}s and {exploration_rounds} exploration rounds")
                 best_word_display = format_hebrew_output(beam_status['best_word']) if beam_status['best_word'] else 'None'
                 logger.info(f"🥈 Best candidate: {best_word_display} ({beam_status['best_similarity']:.2f})")
                 logger.info(f"📊 Total guesses: {self.total_guesses}")
