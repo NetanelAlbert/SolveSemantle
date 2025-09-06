@@ -13,10 +13,12 @@ try:
     # Try relative imports first (when used as module)
     from .api_client import SemantheAPIClient
     from .beam_search import BeamSearcher, WordCandidate
+    from .language_model import HebrewLanguageModel
 except ImportError:
     # Fall back to absolute imports (when run as script)
     from api_client import SemantheAPIClient
     from beam_search import BeamSearcher, WordCandidate
+    from language_model import HebrewLanguageModel
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -26,18 +28,36 @@ logger = logging.getLogger(__name__)
 class SemantleSolver:
     """Main solver for Hebrew Semantle puzzles"""
     
-    def __init__(self, beam_width: int = 5, timeout_seconds: int = 300):
+    def __init__(self, beam_width: int = 5, timeout_seconds: int = 300, use_language_model: bool = True):
         """
         Initialize the Semantle solver
         
         Args:
             beam_width: Number of top candidates to maintain in beam search
             timeout_seconds: Maximum solving time in seconds (default: 5 minutes)
+            use_language_model: Whether to use Word2Vec model for intelligent exploration
         """
         self.beam_width = beam_width
         self.timeout_seconds = timeout_seconds
+        self.use_language_model = use_language_model
+        
+        # Initialize components
         self.api_client = SemantheAPIClient()
         self.beam_searcher = BeamSearcher(beam_width=beam_width)
+        
+        # Initialize language model if requested
+        self.language_model = None
+        if use_language_model:
+            try:
+                self.language_model = HebrewLanguageModel()
+                if self.language_model.load_model():
+                    logger.info("Hebrew Word2Vec model loaded successfully")
+                else:
+                    logger.warning("Failed to load Word2Vec model. Using fallback exploration.")
+                    self.language_model = None
+            except Exception as e:
+                logger.warning(f"Language model initialization failed: {e}. Using fallback exploration.")
+                self.language_model = None
         
         # Rate limiting settings
         self.request_delay = 1.0  # Delay between API calls in seconds
@@ -49,7 +69,8 @@ class SemantleSolver:
         self.solution_found = False
         self.solution_word: Optional[str] = None
         
-        logger.info(f"Initialized SemantleSolver with beam_width={beam_width}, timeout={timeout_seconds}s")
+        strategy = "Word2Vec + Beam Search" if self.language_model else "Basic Beam Search"
+        logger.info(f"Initialized SemantleSolver with {strategy}, beam_width={beam_width}, timeout={timeout_seconds}s")
     
     def _get_initial_word_list(self) -> List[str]:
         """
@@ -129,8 +150,8 @@ class SemantleSolver:
         """
         Generate new words to explore based on current best candidates
         
-        This is a simplified expansion - in a full implementation,
-        this would use word embeddings or linguistic patterns
+        Uses Word2Vec model for intelligent semantic exploration when available,
+        falls back to basic expansion otherwise.
         
         Returns:
             List of new words to explore
@@ -138,19 +159,55 @@ class SemantleSolver:
         top_candidates = self.beam_searcher.get_top_candidates(count=3)
         expansion_words = []
         
-        # For now, use a simple heuristic - could be enhanced with word2vec later
-        # This is a placeholder that would be improved in Unit 4 with proper word embeddings
+        # Strategy 1: Use Word2Vec model for intelligent expansion
+        if self.language_model and top_candidates:
+            logger.debug("Using Word2Vec model for intelligent word expansion")
+            
+            # Extract candidate words
+            candidate_words = [candidate.word for candidate in top_candidates]
+            
+            # Get intelligent suggestions from language model
+            suggested_words = self.language_model.get_word_suggestions(
+                candidate_words, count=15
+            )
+            
+            # Filter out already tested words and add to expansion
+            for word in suggested_words:
+                if not self.beam_searcher.is_word_tested(word):
+                    expansion_words.append(word)
+                    if len(expansion_words) >= 8:  # More words with intelligent selection
+                        break
+            
+            # If we got good suggestions, return them
+            if expansion_words:
+                logger.info(f"Generated {len(expansion_words)} intelligent word suggestions")
+                return expansion_words
+        
+        # Strategy 2: Fallback to basic expansion (expanded word list)
+        logger.debug("Using fallback word expansion strategy")
         hebrew_word_variations = [
+            # Basic words
             "דבר", "מילה", "טוב", "רע", "גדול", "קטן", "חדש", "ישן",
             "לבן", "שחור", "אדום", "ירוק", "כחול", "צהוב", "חם", "קר",
-            "מהיר", "איטי", "חזק", "חלש", "יפה", "מכוער", "חכם", "טיפש"
+            "מהיר", "איטי", "חזק", "חלש", "יפה", "מכוער", "חכם", "טיפש",
+            "אוכל", "מים", "ארץ", "שמש", "ירח", "כוכב", "עץ", "פרח",
+            "ספר", "כתיבה", "קריאה", "למידה", "חכמה", "ידע", "מדע", "אמת",
+            # Extended vocabulary for better exploration
+            "רגש", "תחושה", "מחשבה", "רעיון", "חלום", "מציאות", "זמן", "מקום",
+            "דרך", "מסע", "יעד", "תקווה", "פחד", "שמחה", "עצבות", "כעס",
+            "אהבה", "שנאה", "חברות", "משפחה", "קהילה", "חברה", "אנושות", "עולם",
+            "שמים", "ים", "הר", "עמק", "יער", "מדבר", "עיר", "כפר",
+            "בית", "חדר", "מטבח", "חלון", "דלת", "גינה", "רחוב", "שכונה",
+            "לב", "ראש", "עיניים", "אוזניים", "פה", "ידיים", "רגליים", "גוף",
+            "נפש", "רוח", "נשמה", "לב", "מוח", "זיכרון", "דמיון", "יצירה",
+            "אמנות", "מוסיקה", "ציור", "שיר", "סיפור", "משל", "חידה", "תשובה"
         ]
         
         # Filter out already tested words
         for word in hebrew_word_variations:
             if not self.beam_searcher.is_word_tested(word):
                 expansion_words.append(word)
-                if len(expansion_words) >= 5:  # Limit expansion size
+                if len(expansion_words) >= 12:  # Increased expansion size for better coverage
                     break
         
         return expansion_words
@@ -190,7 +247,8 @@ class SemantleSolver:
                 logger.info("Phase 2: Beam search exploration")
                 
                 exploration_rounds = 0
-                max_exploration_rounds = 10  # Prevent infinite loops
+                max_exploration_rounds = 50  # Prevent infinite loops
+                consecutive_empty_rounds = 0
                 
                 while (not self.solution_found and 
                        self._has_time_remaining() and 
@@ -203,8 +261,16 @@ class SemantleSolver:
                     expansion_words = self._expand_search_from_candidates()
                     
                     if not expansion_words:
-                        logger.info("No new words to explore - search exhausted")
-                        break
+                        consecutive_empty_rounds += 1
+                        logger.warning(f"No new words found (attempt {consecutive_empty_rounds}/5)")
+                        
+                        if consecutive_empty_rounds >= 5:
+                            logger.info("Search exhausted after 5 consecutive empty rounds")
+                            break
+                        else:
+                            continue  # Try the next round
+                    else:
+                        consecutive_empty_rounds = 0  # Reset counter on successful round
                     
                     # Test expansion words
                     for word in expansion_words:
@@ -239,7 +305,9 @@ class SemantleSolver:
                     'similarity': beam_status['best_similarity']
                 },
                 'words_tested': beam_status['tested_count'],
-                'beam_size': beam_status['beam_size']
+                'beam_size': beam_status['beam_size'],
+                'strategy_used': "Word2Vec + Beam Search" if self.language_model else "Basic Beam Search",
+                'language_model_loaded': self.language_model is not None
             }
             
             # Log final results
@@ -247,7 +315,8 @@ class SemantleSolver:
                 logger.info(f"🎉 PUZZLE SOLVED! Word: {self.solution_word} in {self.total_guesses} guesses")
                 logger.info(f"⏱️  Total time: {elapsed_time:.1f}s")
             else:
-                logger.info(f"❌ Puzzle not solved within {self.timeout_seconds}s timeout")
+                total_time = time.time() - self.start_time
+                logger.info(f"❌ Puzzle not solved within {total_time:.1f}s and  {exploration_rounds} exploration rounds")
                 logger.info(f"🥈 Best candidate: {beam_status['best_word']} ({beam_status['best_similarity']:.2f})")
                 logger.info(f"📊 Total guesses: {self.total_guesses}")
             

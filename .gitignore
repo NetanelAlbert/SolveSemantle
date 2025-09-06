@@ -1,0 +1,173 @@
+# Hebrew Word2Vec Model Files (large files - download separately)
+wiki_tokenized_model.zip
+model.mdl
+model.mdl.syn1neg.npy
+model.mdl.wv.vectors.npy
+*.bin
+*.w2v
+hebrew_w2v.bin
+word2vec.bin
+
+# Alternative model locations
+models/
+word2vec/
+embeddings/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+
+# Logs
+logs/
+*.log
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+lcov.info
+
+# Dependency directories
+node_modules/
+
+# Optional npm cache directory
+.npm
+
+# Temporary folders
+tmp/
+temp/
+
+# Test artifacts
+test_results/
+.pytest_cache/
+test_output/
+
+# Personal notes and scratch files
+notes.txt
+scratch.*
+TODO.md
+.notes/
+
+# API keys and secrets (if any)
+.secrets
+config/secrets.yaml
+*.key
+*.pem
+
+# Large data files
+*.csv
+*.json.gz
+*.pkl
+*.pickle
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Editor artifacts
+.vscode/settings.json
+.vscode/launch.json
+
+# planner
+scratchpads/
