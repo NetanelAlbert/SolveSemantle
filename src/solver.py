@@ -14,11 +14,13 @@ try:
     from .api_client import SemantheAPIClient
     from .beam_search import BeamSearcher, WordCandidate
     from .language_model import HebrewLanguageModel
+    from .hebrew_utils import format_hebrew_output
 except ImportError:
     # Fall back to absolute imports (when run as script)
     from api_client import SemantheAPIClient
     from beam_search import BeamSearcher, WordCandidate
     from language_model import HebrewLanguageModel
+    from hebrew_utils import format_hebrew_output
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -115,21 +117,21 @@ class SemantleSolver:
             
             if similarity is not None:
                 self.total_guesses += 1
-                logger.info(f"Guess #{self.total_guesses}: {word} → {similarity:.2f}")
+                logger.info(f"Guess #{self.total_guesses}: {format_hebrew_output(word)} → {similarity:.2f}")
                 
                 # Check if we found the solution (perfect match)
                 if similarity >= 99.99:  # Allow for floating point precision
                     self.solution_found = True
                     self.solution_word = word
-                    logger.info(f"🎉 SOLUTION FOUND: {word} (similarity: {similarity:.2f})")
+                    logger.info(f"🎉 SOLUTION FOUND: {format_hebrew_output(word)} (similarity: {similarity:.2f})")
                 
                 return similarity
             else:
-                logger.warning(f"API call failed for word: {word}")
+                logger.warning(f"API call failed for word: {format_hebrew_output(word)}")
                 return None
                 
         except Exception as e:
-            logger.error(f"Error testing word '{word}': {e}")
+            logger.error(f"Error testing word '{format_hebrew_output(word)}': {e}")
             return None
     
     def _has_time_remaining(self) -> bool:
@@ -287,8 +289,9 @@ class SemantleSolver:
                     
                     # Show progress
                     status = self.beam_searcher.get_beam_status()
+                    best_word_display = format_hebrew_output(status['best_word']) if status['best_word'] else 'None'
                     logger.info(f"Progress: {status['tested_count']} words tested, "
-                              f"best: {status['best_word']} ({status['best_similarity']:.2f})")
+                              f"best: {best_word_display} ({status['best_similarity']:.2f})")
             
             # Compile results
             elapsed_time = self._get_elapsed_time()
@@ -312,12 +315,13 @@ class SemantleSolver:
             
             # Log final results
             if self.solution_found:
-                logger.info(f"🎉 PUZZLE SOLVED! Word: {self.solution_word} in {self.total_guesses} guesses")
+                logger.info(f"🎉 PUZZLE SOLVED! Word: {format_hebrew_output(self.solution_word)} in {self.total_guesses} guesses")
                 logger.info(f"⏱️  Total time: {elapsed_time:.1f}s")
             else:
                 total_time = time.time() - self.start_time
                 logger.info(f"❌ Puzzle not solved within {total_time:.1f}s and  {exploration_rounds} exploration rounds")
-                logger.info(f"🥈 Best candidate: {beam_status['best_word']} ({beam_status['best_similarity']:.2f})")
+                best_word_display = format_hebrew_output(beam_status['best_word']) if beam_status['best_word'] else 'None'
+                logger.info(f"🥈 Best candidate: {best_word_display} ({beam_status['best_similarity']:.2f})")
                 logger.info(f"📊 Total guesses: {self.total_guesses}")
             
             return results
@@ -380,7 +384,7 @@ def main():
         print("=" * 50)
         
         if results['success']:
-            print(f"🎉 SUCCESS! Solution found: {results['solution_word']}")
+            print(f"🎉 SUCCESS! Solution found: {format_hebrew_output(results['solution_word'])}")
             print(f"📊 Total guesses: {results['total_guesses']}")
             print(f"⏱️  Time taken: {results['elapsed_time']:.1f} seconds")
         else:
@@ -390,7 +394,7 @@ def main():
             
             best = results.get('best_candidate', {})
             if best.get('word'):
-                print(f"🥈 Best candidate: {best['word']} (similarity: {best['similarity']:.2f})")
+                print(f"🥈 Best candidate: {format_hebrew_output(best['word'])} (similarity: {best['similarity']:.2f})")
             
             print(f"📊 Total guesses: {results['total_guesses']}")
             print(f"⏱️  Time elapsed: {results['elapsed_time']:.1f} seconds")

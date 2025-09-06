@@ -10,6 +10,11 @@ from typing import List, Dict, Set, Tuple, Optional
 from dataclasses import dataclass
 import heapq
 
+try:
+    from .hebrew_utils import format_hebrew_output
+except ImportError:
+    from hebrew_utils import format_hebrew_output
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -69,7 +74,7 @@ class BeamSearcher:
             # Update best candidate
             if self.best_candidate is None or similarity > self.best_candidate.similarity:
                 self.best_candidate = candidate
-                logger.info(f"New best candidate: {word} (similarity: {similarity:.2f})")
+                logger.info(f"New best candidate: {format_hebrew_output(word)} (similarity: {similarity:.2f})")
             
             # Add to beam if there's space or if better than worst in beam
             if len(self.current_beam) < self.beam_width:
@@ -179,7 +184,7 @@ def main():
         # Add all test candidates
         for word, similarity in test_data:
             added = searcher.add_candidate(word, similarity)
-            print(f"{'✓' if added else '✗'} {word}: {similarity:.2f} {'(added to beam)' if added else '(filtered out)'}")
+            print(f"{'✓' if added else '✗'} {format_hebrew_output(word)}: {similarity:.2f} {'(added to beam)' if added else '(filtered out)'}")
         
         print("\n" + "=" * 40)
         print("Beam Search Results:")
@@ -188,18 +193,18 @@ def main():
         status = searcher.get_beam_status()
         print(f"Words tested: {status['tested_count']}")
         print(f"Beam size: {status['beam_size']}/{status['beam_width']}")
-        print(f"Best candidate: {status['best_word']} ({status['best_similarity']:.2f})")
+        print(f"Best candidate: {format_hebrew_output(status['best_word'])} ({status['best_similarity']:.2f})")
         
         print("\nTop candidates in beam:")
         top_candidates = searcher.get_top_candidates()
         for i, candidate in enumerate(top_candidates, 1):
-            print(f"  {i}. {candidate.word}: {candidate.similarity:.2f}")
+            print(f"  {i}. {format_hebrew_output(candidate.word)}: {candidate.similarity:.2f}")
         
         # Test duplicate detection
         print("\n" + "=" * 40)
         print("Testing duplicate detection:")
         duplicate_added = searcher.add_candidate("שלום", 30.0)  # Already tested
-        print(f"Duplicate word 'שלום' added: {duplicate_added}")
+        print(f"Duplicate word '{format_hebrew_output('שלום')}' added: {duplicate_added}")
         
         print("=" * 40)
         print("Beam search test completed")

@@ -21,6 +21,7 @@ try:
     from language_model import HebrewLanguageModel, download_model_instructions
     from api_client import SemantheAPIClient
     from beam_search import BeamSearcher
+    from hebrew_utils import format_hebrew_output
 except ImportError as e:
     print(f"Import error: {e}")
     print("Make sure you're running this from the project root directory")
@@ -83,10 +84,10 @@ class SolverPerformanceTester:
             for word1, word2 in test_pairs:
                 similarity = model.calculate_similarity(word1, word2)
                 if similarity is not None:
-                    print(f"  {word1} <-> {word2}: {similarity:.2f}")
+                    print(f"  {format_hebrew_output(word1)} <-> {format_hebrew_output(word2)}: {similarity:.2f}")
                     similarities_found += 1
                 else:
-                    print(f"  {word1} <-> {word2}: Not found in model")
+                    print(f"  {format_hebrew_output(word1)} <-> {format_hebrew_output(word2)}: Not found in model")
             
             if similarities_found == 0:
                 print("❌ No similarity calculations succeeded")
@@ -102,10 +103,11 @@ class SolverPerformanceTester:
             for word in test_words:
                 similar = model.find_most_similar(word, topn=3)
                 if similar:
-                    print(f"  {word}: {[w for w, s in similar]}")
+                    similar_words_formatted = [format_hebrew_output(w) for w, s in similar]
+                    print(f"  {format_hebrew_output(word)}: {similar_words_formatted}")
                     suggestions_found += 1
                 else:
-                    print(f"  {word}: No similar words found")
+                    print(f"  {format_hebrew_output(word)}: No similar words found")
             
             if suggestions_found == 0:
                 print("❌ No word suggestions found")
@@ -192,7 +194,9 @@ class SolverPerformanceTester:
         
         if basic_result.get('best_candidate'):
             best = basic_result['best_candidate']
-            print(f"   Best: {best.get('word', 'N/A')} ({best.get('similarity', 0):.2f})")
+            best_word = best.get('word', 'N/A')
+            best_word_display = format_hebrew_output(best_word) if best_word != 'N/A' else 'N/A'
+            print(f"   Best: {best_word_display} ({best.get('similarity', 0):.2f})")
         
         # Test Word2Vec-enhanced solver
         print("\n2. Testing Word2Vec-Enhanced Solver...")
@@ -208,7 +212,9 @@ class SolverPerformanceTester:
         
         if word2vec_result.get('best_candidate'):
             best = word2vec_result['best_candidate']
-            print(f"   Best: {best.get('word', 'N/A')} ({best.get('similarity', 0):.2f})")
+            best_word = best.get('word', 'N/A')
+            best_word_display = format_hebrew_output(best_word) if best_word != 'N/A' else 'N/A'
+            print(f"   Best: {best_word_display} ({best.get('similarity', 0):.2f})")
         
         # Calculate improvements
         print("\n3. Performance Comparison:")

@@ -13,6 +13,11 @@ from pathlib import Path
 import numpy as np
 
 try:
+    from .hebrew_utils import format_hebrew_output
+except ImportError:
+    from hebrew_utils import format_hebrew_output
+
+try:
     from gensim.models import KeyedVectors
     GENSIM_AVAILABLE = True
 except ImportError:
@@ -609,15 +614,15 @@ def main():
             for word2 in test_words[i+1:]:
                 similarity = model.calculate_similarity(word1, word2)
                 if similarity is not None:
-                    print(f"  {word1} <-> {word2}: {similarity:.2f}")
+                    print(f"  {format_hebrew_output(word1)} <-> {format_hebrew_output(word2)}: {similarity:.2f}")
                 else:
-                    print(f"  {word1} <-> {word2}: Not found in model")
+                    print(f"  {format_hebrew_output(word1)} <-> {format_hebrew_output(word2)}: Not found in model")
         
         # Test word suggestions
-        print(f"\nTesting word suggestions for '{test_words[0]}':")
+        print(f"\nTesting word suggestions for '{format_hebrew_output(test_words[0])}':")
         similar = model.find_most_similar(test_words[0], topn=5)
         for word, sim in similar:
-            print(f"  {word}: {sim:.2f}")
+            print(f"  {format_hebrew_output(word)}: {sim:.2f}")
         
         print("\n" + "=" * 50)
         print("Language model test completed successfully!")
