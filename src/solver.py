@@ -16,6 +16,7 @@ try:
     from .language_model import HebrewLanguageModel
     from .hebrew_utils import format_hebrew_output
     from .learning_system import ContextualLearningSystem
+    from .optimization import SmartTimeoutManager, SemanticGradientOptimizer, EmergencyStrategyManager, ParallelOptimizer
 except ImportError:
     # Fall back to absolute imports (when run as script)
     from api_client import SemantheAPIClient
@@ -23,6 +24,7 @@ except ImportError:
     from language_model import HebrewLanguageModel
     from hebrew_utils import format_hebrew_output
     from learning_system import ContextualLearningSystem
+    from optimization import SmartTimeoutManager, SemanticGradientOptimizer, EmergencyStrategyManager, ParallelOptimizer
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -30,22 +32,24 @@ logger = logging.getLogger(__name__)
 
 
 class SemantleSolver:
-    """Main solver for Hebrew Semantle puzzles"""
+    """Main solver for Hebrew Semantle puzzles with advanced optimization"""
     
-    def __init__(self, beam_width: int = 5, timeout_seconds: int = 300, use_language_model: bool = True, enable_learning: bool = True):
+    def __init__(self, beam_width: int = 5, timeout_seconds: int = 300, use_language_model: bool = True, enable_learning: bool = True, enable_optimization: bool = True):
         """
-        Initialize the Semantle solver with contextual learning
+        Initialize the Semantle solver with contextual learning and advanced optimization
         
         Args:
             beam_width: Number of top candidates to maintain in beam search
             timeout_seconds: Maximum solving time in seconds (default: 5 minutes)
             use_language_model: Whether to use Word2Vec model for intelligent exploration
             enable_learning: Whether to enable contextual learning system
+            enable_optimization: Whether to enable advanced optimization techniques
         """
         self.beam_width = beam_width
         self.timeout_seconds = timeout_seconds
         self.use_language_model = use_language_model
         self.enable_learning = enable_learning
+        self.enable_optimization = enable_optimization
         
         # Initialize components
         self.api_client = SemantheAPIClient()
@@ -61,7 +65,18 @@ class SemantleSolver:
             self.learning_system = ContextualLearningSystem()
         else:
             self.learning_system = None
-
+        
+        # Initialize advanced optimization components
+        if self.enable_optimization:
+            self.smart_timeout = SmartTimeoutManager(base_timeout=timeout_seconds, progress_threshold=5.0)
+            self.emergency_manager = EmergencyStrategyManager()
+            self.parallel_optimizer = ParallelOptimizer(max_workers=1, rate_limit_delay=1.0)  # Respect API limits
+            logger.info("Advanced optimization techniques enabled")
+        else:
+            self.smart_timeout = None
+            self.emergency_manager = None
+            self.parallel_optimizer = None
+        
         # Initialize language model if requested
         self.language_model = None
         if use_language_model:
@@ -69,12 +84,21 @@ class SemantleSolver:
                 self.language_model = HebrewLanguageModel()
                 if self.language_model.load_model():
                     logger.info("Hebrew Word2Vec model loaded successfully")
+                    # Initialize gradient optimizer if language model is available
+                    if self.enable_optimization:
+                        self.gradient_optimizer = SemanticGradientOptimizer(self.language_model)
+                    else:
+                        self.gradient_optimizer = None
                 else:
                     logger.warning("Failed to load Word2Vec model. Using fallback exploration.")
                     self.language_model = None
+                    self.gradient_optimizer = None
             except Exception as e:
                 logger.warning(f"Language model initialization failed: {e}. Using fallback exploration.")
                 self.language_model = None
+                self.gradient_optimizer = None
+        else:
+            self.gradient_optimizer = None
         
         # Rate limiting settings
         self.request_delay = 1.0  # Delay between API calls in seconds
@@ -92,6 +116,8 @@ class SemantleSolver:
         strategy_parts.append("Enhanced Beam Search") 
         if self.enable_learning:
             strategy_parts.append("Learning")
+        if self.enable_optimization:
+            strategy_parts.append("Advanced Optimization")
         
         strategy = " + ".join(strategy_parts)
         logger.info(f"Initialized SemantleSolver with {strategy}, beam_width={beam_width}, timeout={timeout_seconds}s")
@@ -181,12 +207,15 @@ class SemantleSolver:
             return None
     
     def _has_time_remaining(self) -> bool:
-        """Check if we still have time remaining for solving"""
-        if self.start_time is None:
-            return True
-            
-        elapsed = time.time() - self.start_time
-        return elapsed < self.timeout_seconds
+        """Check if there's time remaining with smart timeout management"""
+        if self.smart_timeout and self.enable_optimization:
+            return self.smart_timeout.should_continue()
+        else:
+            # Fallback to basic timeout check
+            if self.start_time is None:
+                return True
+            elapsed = time.time() - self.start_time
+            return elapsed < self.timeout_seconds
     
     def _get_elapsed_time(self) -> float:
         """Get elapsed solving time in seconds"""
@@ -254,27 +283,42 @@ class SemantleSolver:
 
     def _expand_search_from_candidates(self) -> List[str]:
         """
-        Generate new words to explore based on current best candidates
+        Generate new words to explore with advanced optimization techniques
         
         Uses multi-strategy word generation with morphological patterns, semantic clustering,
-        frequency-based prioritization, adaptive strategy weighting, and contextual learning.
+        frequency-based prioritization, adaptive strategy weighting, contextual learning,
+        semantic gradient ascent, and emergency strategies.
         
         Returns:
-            List of words to explore, prioritized by parent candidate similarity and learning
+            List of words to explore, optimized for maximum effectiveness
         """
         top_candidates = self.beam_searcher.get_top_candidates(count=3)
         word_tuples = []
         
-        # Strategy 1: Use enhanced multi-strategy word generation with learning
+        # Check for emergency strategy activation
+        beam_status = self.beam_searcher.get_beam_status()
+        if (self.emergency_manager and self.enable_optimization and 
+            self.emergency_manager.should_activate_emergency(beam_status['tested_count'], beam_status['best_similarity'])):
+            
+            emergency_words = self.emergency_manager.get_emergency_words(
+                self.language_model, 
+                self.beam_searcher.tested_words, 
+                count=8
+            )
+            if emergency_words:
+                logger.info(f"Using emergency strategy with {len(emergency_words)} words")
+                self._word_generation_metadata = {}  # No metadata for emergency words
+                return emergency_words
+        
+        # Strategy 1: Use enhanced multi-strategy word generation with learning and optimization
         if self.language_model and top_candidates:
-            logger.debug("Using multi-strategy word generation with morphological patterns and learning")
+            logger.debug("Using multi-strategy word generation with optimization and learning")
             
             # Determine current search phase
             search_phase = self._determine_search_phase()
             
             # Update puzzle classification in learning system
             if self.learning_system:
-                beam_status = self.beam_searcher.get_beam_status()
                 self.learning_system.current_puzzle_type = self.learning_system.classify_puzzle_type(beam_status)
             
             # Get candidate words for the language model
@@ -291,6 +335,15 @@ class SemantleSolver:
                 search_phase=search_phase,
                 count=10  # Generate more words for better prioritization
             )
+            
+            # Add semantic gradient optimization words
+            gradient_words = []
+            if self.gradient_optimizer and self.enable_optimization:
+                gradient_words = self.gradient_optimizer.find_semantic_peak(
+                    candidate_words, 
+                    tested_words
+                )
+                logger.debug(f"Gradient optimizer found {len(gradient_words)} peak candidates")
             
             # Get learned suggestions from historical patterns
             learned_suggestions = []
@@ -344,6 +397,16 @@ class SemantleSolver:
                     if len(word_tuples) >= 12:
                         break
             
+            # Add gradient-optimized words with high priority
+            for gradient_word in gradient_words:
+                if (not self.beam_searcher.is_word_tested(gradient_word) and 
+                    gradient_word not in [w for w, _, _, _ in word_tuples]):
+                    # Gradient words get high priority boost
+                    best_similarity = top_candidates[0].similarity if top_candidates else 50.0
+                    gradient_similarity = best_similarity * 1.1  # 10% boost for gradient words
+                    best_parent = top_candidates[0].word if top_candidates else 'gradient'
+                    word_tuples.append((gradient_word, gradient_similarity, best_parent, 'gradient'))
+            
             # Add learned suggestions with high priority
             for learned_word, relevance in learned_suggestions:
                 if (not self.beam_searcher.is_word_tested(learned_word) and 
@@ -353,25 +416,29 @@ class SemantleSolver:
                     best_parent = top_candidates[0].word if top_candidates else 'learned'
                     word_tuples.append((learned_word, learned_similarity, best_parent, 'learned'))
             
-            # If we got good suggestions, prioritize and return them
+            # If we got good suggestions, optimize and return them
             if word_tuples:
                 # Convert tuples to (word, similarity) format for prioritization
                 prioritization_tuples = [(word, similarity) for word, similarity, _, _ in word_tuples]
-                prioritized_words = self._create_prioritized_word_queue(prioritization_tuples)
+                
+                # Use advanced optimization for word ordering
+                if self.enable_optimization and self.parallel_optimizer:
+                    words = [word for word, _ in prioritization_tuples]
+                    priorities = [similarity for _, similarity in prioritization_tuples]
+                    optimized_words = self.parallel_optimizer.optimize_word_order(words, priorities)
+                else:
+                    prioritized_words = self._create_prioritized_word_queue(prioritization_tuples)
+                    optimized_words = prioritized_words
                 
                 # Create enhanced word list with metadata for learning
-                enhanced_words = []
                 word_metadata = {word: (parent, strategy) for word, _, parent, strategy in word_tuples}
-                
-                for word in prioritized_words:
-                    enhanced_words.append(word)
                 
                 # Store metadata for learning integration
                 self._word_generation_metadata = word_metadata
                 
-                logger.info(f"Generated {len(enhanced_words)} multi-strategy + learning suggestions "
+                logger.info(f"Generated {len(optimized_words)} optimized suggestions "
                            f"with priority ordering (phase: {search_phase})")
-                return enhanced_words
+                return optimized_words
         
         # Strategy 2: Fallback to basic expansion (expanded word list)
         logger.debug("Using fallback word expansion strategy")
@@ -409,14 +476,18 @@ class SemantleSolver:
     
     def solve(self) -> Dict[str, Any]:
         """
-        Solve the current Hebrew Semantle puzzle
+        Solve Hebrew Semantle puzzle with advanced optimization techniques
         
         Returns:
             Dictionary with solving results and statistics
         """
         try:
-            logger.info("Starting Hebrew Semantle solver...")
+            logger.info("Starting Hebrew Semantle solver with advanced optimization...")
             self.start_time = time.time()
+            
+            # Start smart timeout manager
+            if self.smart_timeout and self.enable_optimization:
+                self.smart_timeout.start_timing()
             
             # Phase 1: Test initial word list
             initial_words = self._get_initial_word_list()
@@ -434,12 +505,16 @@ class SemantleSolver:
                 if similarity is not None:
                     self.beam_searcher.add_candidate(word, similarity)
                     
+                    # Update smart timeout with progress
+                    if self.smart_timeout and self.enable_optimization:
+                        self.smart_timeout.update_progress(similarity)
+                    
                     if self.solution_found:
                         break
             
-            # Phase 2: Beam search exploration
+            # Phase 2: Advanced beam search exploration
             if not self.solution_found and self._has_time_remaining():
-                logger.info("Phase 2: Beam search exploration")
+                logger.info("Phase 2: Advanced beam search exploration with optimization")
                 
                 exploration_rounds = 0
                 max_exploration_rounds = 50  # Prevent infinite loops
@@ -452,7 +527,7 @@ class SemantleSolver:
                     exploration_rounds += 1
                     logger.info(f"Exploration round {exploration_rounds}")
                     
-                    # Get words to explore based on current candidates
+                    # Get words to explore based on current candidates with optimization
                     expansion_words = self._expand_search_from_candidates()
                     
                     if not expansion_words:
@@ -467,15 +542,37 @@ class SemantleSolver:
                     else:
                         consecutive_empty_rounds = 0  # Reset counter on successful round
                     
-                    # Test expansion words
+                    # Test expansion words with enhanced learning integration and optimization
                     for word in expansion_words:
                         if not self._has_time_remaining():
                             logger.info("Timeout reached during exploration")
                             break
                         
-                        similarity = self._test_word(word)
+                        # Get word metadata for learning
+                        parent_candidate = None
+                        parent_similarity = 0.0
+                        strategy_used = 'fallback'
+                        
+                        if hasattr(self, '_word_generation_metadata') and word in self._word_generation_metadata:
+                            parent_candidate, strategy_used = self._word_generation_metadata[word]
+                            # Find parent similarity
+                            for candidate in self.beam_searcher.get_top_candidates(count=3):
+                                if candidate.word == parent_candidate:
+                                    parent_similarity = candidate.similarity
+                                    break
+                        
+                        similarity = self._test_word(
+                            word, 
+                            parent_candidate=parent_candidate, 
+                            parent_similarity=parent_similarity,
+                            strategy_used=strategy_used
+                        )
                         if similarity is not None:
                             self.beam_searcher.add_candidate(word, similarity)
+                            
+                            # Update smart timeout with progress
+                            if self.smart_timeout and self.enable_optimization:
+                                self.smart_timeout.update_progress(similarity)
                             
                             if self.solution_found:
                                 break
@@ -488,7 +585,7 @@ class SemantleSolver:
                               f"beam: {status['beam_size']}/{status['beam_width']}, "
                               f"strategy: {status['strategy']}")
             
-            # Compile results
+            # Compile results with optimization metrics
             elapsed_time = self._get_elapsed_time()
             beam_status = self.beam_searcher.get_beam_status()
             
@@ -497,7 +594,7 @@ class SemantleSolver:
                 'solution_word': self.solution_word,
                 'total_guesses': self.total_guesses,
                 'elapsed_time': elapsed_time,
-                'timeout_reached': elapsed_time >= self.timeout_seconds,
+                'timeout_reached': not self._has_time_remaining(),
                 'best_candidate': {
                     'word': beam_status['best_word'],
                     'similarity': beam_status['best_similarity']
@@ -507,11 +604,25 @@ class SemantleSolver:
                 'beam_width_final': beam_status['beam_width'],
                 'beam_width_range': beam_status['beam_width_range'],
                 'search_strategy': beam_status['strategy'],
-                'strategy_used': "Word2Vec + Enhanced Beam Search" if self.language_model else "Enhanced Beam Search",
-                'language_model_loaded': self.language_model is not None
+                'strategy_used': f"Word2Vec + Enhanced Beam Search + Learning + Advanced Optimization" if self.language_model and self.enable_learning and self.enable_optimization else 
+                               f"Word2Vec + Enhanced Beam Search + Learning" if self.language_model and self.enable_learning else
+                               f"Word2Vec + Enhanced Beam Search + Advanced Optimization" if self.language_model and self.enable_optimization else
+                               f"Word2Vec + Enhanced Beam Search" if self.language_model else 
+                               f"Enhanced Beam Search + Learning + Advanced Optimization" if self.enable_learning and self.enable_optimization else
+                               f"Enhanced Beam Search + Learning" if self.enable_learning else
+                               f"Enhanced Beam Search + Advanced Optimization" if self.enable_optimization else "Enhanced Beam Search",
+                'language_model_loaded': self.language_model is not None,
+                'learning_enabled': self.enable_learning,
+                'optimization_enabled': self.enable_optimization,
+                'learning_stats': self.learning_system.get_learning_stats() if self.learning_system else None,
+                'optimization_stats': {
+                    'smart_timeout_extensions': self.smart_timeout.timeout_extensions if self.smart_timeout else 0,
+                    'emergency_activated': self.emergency_manager.emergency_activated if self.emergency_manager else False,
+                    'gradient_optimization_used': self.gradient_optimizer is not None
+                } if self.enable_optimization else None
             }
             
-            # Log final results
+            # Log final results with optimization info
             if self.solution_found:
                 logger.info(f"🎉 PUZZLE SOLVED! Word: {format_hebrew_output(self.solution_word)} in {self.total_guesses} guesses")
                 logger.info(f"⏱️  Total time: {elapsed_time:.1f}s")
@@ -522,6 +633,9 @@ class SemantleSolver:
                 best_word_display = format_hebrew_output(beam_status['best_word']) if beam_status['best_word'] else 'None'
                 logger.info(f"🥈 Best candidate: {best_word_display} ({beam_status['best_similarity']:.2f})")
                 logger.info(f"📊 Total guesses: {self.total_guesses}")
+                
+                if self.enable_optimization:
+                    logger.info(f"🔧 Optimization: {results['optimization_stats']}")
             
             return results
             
