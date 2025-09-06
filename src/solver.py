@@ -7,7 +7,7 @@ Hebrew Semantle puzzles with 5-minute timeout and intelligent exploration.
 
 import time
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 
 try:
     # Try relative imports first (when used as module)
@@ -148,42 +148,78 @@ class SemantleSolver:
             return 0.0
         return time.time() - self.start_time
     
+    def _create_prioritized_word_queue(self, word_tuples: List[Tuple[str, float]]) -> List[str]:
+        """
+        Create a prioritized word queue where words are ordered by parent similarity
+        
+        Words suggested by higher-scoring candidates are tested first.
+        Uses parent similarity as primary sort key, alphabetical as secondary.
+        
+        Args:
+            word_tuples: List of (word, parent_similarity) tuples
+            
+        Returns:
+            List of words sorted by priority (highest parent similarity first)
+        """
+        if not word_tuples:
+            return []
+        
+        # Sort by parent similarity (descending), then by word (ascending) for stability
+        prioritized_words = sorted(
+            word_tuples,
+            key=lambda x: (-x[1], x[0])  # Negative similarity for descending, word for ascending
+        )
+        
+        # Extract just the words for return
+        word_list = [word for word, _ in prioritized_words]
+        
+        logger.debug(f"Prioritized {len(word_list)} words by parent similarity")
+        if prioritized_words:
+            best_parent_sim = prioritized_words[0][1]
+            worst_parent_sim = prioritized_words[-1][1] 
+            logger.debug(f"Parent similarity range: {worst_parent_sim:.2f} to {best_parent_sim:.2f}")
+        
+        return word_list
+
     def _expand_search_from_candidates(self) -> List[str]:
         """
         Generate new words to explore based on current best candidates
         
         Uses Word2Vec model for intelligent semantic exploration when available,
-        falls back to basic expansion otherwise.
+        falls back to basic expansion otherwise. Returns words prioritized by 
+        the similarity score of their parent candidates.
         
         Returns:
-            List of new words to explore
+            List of words to explore, prioritized by parent candidate similarity
         """
         top_candidates = self.beam_searcher.get_top_candidates(count=3)
-        expansion_words = []
+        word_tuples = []
         
         # Strategy 1: Use Word2Vec model for intelligent expansion
         if self.language_model and top_candidates:
             logger.debug("Using Word2Vec model for intelligent word expansion")
             
-            # Extract candidate words
-            candidate_words = [candidate.word for candidate in top_candidates]
+            # Get suggestions from each candidate separately to track parent similarity
+            for candidate in top_candidates:
+                suggested_words = self.language_model.get_word_suggestions(
+                    [candidate.word], count=5  # Fewer per candidate to maintain quality
+                )
+                
+                # Add words with parent similarity tracking
+                for word in suggested_words:
+                    if not self.beam_searcher.is_word_tested(word):
+                        word_tuples.append((word, candidate.similarity))
+                        if len(word_tuples) >= 8:  # More words with intelligent selection
+                            break
+                
+                if len(word_tuples) >= 8:
+                    break
             
-            # Get intelligent suggestions from language model
-            suggested_words = self.language_model.get_word_suggestions(
-                candidate_words, count=15
-            )
-            
-            # Filter out already tested words and add to expansion
-            for word in suggested_words:
-                if not self.beam_searcher.is_word_tested(word):
-                    expansion_words.append(word)
-                    if len(expansion_words) >= 8:  # More words with intelligent selection
-                        break
-            
-            # If we got good suggestions, return them
-            if expansion_words:
-                logger.info(f"Generated {len(expansion_words)} intelligent word suggestions")
-                return expansion_words
+            # If we got good suggestions, prioritize and return them
+            if word_tuples:
+                prioritized_words = self._create_prioritized_word_queue(word_tuples)
+                logger.info(f"Generated {len(prioritized_words)} intelligent word suggestions with priority ordering")
+                return prioritized_words
         
         # Strategy 2: Fallback to basic expansion (expanded word list)
         logger.debug("Using fallback word expansion strategy")
@@ -205,14 +241,15 @@ class SemantleSolver:
             "אמנות", "מוסיקה", "ציור", "שיר", "סיפור", "משל", "חידה", "תשובה"
         ]
         
-        # Filter out already tested words
+        # Filter out already tested words and assign default similarity of 0.0
         for word in hebrew_word_variations:
             if not self.beam_searcher.is_word_tested(word):
-                expansion_words.append(word)
-                if len(expansion_words) >= 12:  # Increased expansion size for better coverage
+                word_tuples.append((word, 0.0))  # Default parent similarity for fallback words
+                if len(word_tuples) >= 12:  # Increased expansion size for better coverage
                     break
         
-        return expansion_words
+        # Prioritize even fallback words (though they all have same priority)
+        return self._create_prioritized_word_queue(word_tuples)
     
     def solve(self) -> Dict[str, Any]:
         """
