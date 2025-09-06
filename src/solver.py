@@ -146,7 +146,7 @@ class SemantleSolver:
                 time.sleep(self.request_delay - time_since_last)
             
             # Make API request
-            similarity = self.api_client.get_word_similarity(word)
+            similarity = self.api_client.test_word_similarity(word)
             self.last_request_time = time.time()
             self.total_guesses += 1
             
