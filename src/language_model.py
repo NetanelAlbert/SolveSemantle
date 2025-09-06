@@ -8,14 +8,28 @@ for accurate word similarity predictions and intelligent word exploration.
 import os
 import logging
 import asyncio
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple, Set
 from pathlib import Path
 import numpy as np
 
 try:
-    from .hebrew_utils import format_hebrew_output
+    from .hebrew_utils import (
+        format_hebrew_output, 
+        generate_morphological_variations,
+        get_hebrew_word_frequency_features,
+        cluster_words_by_similarity,
+        calculate_hebrew_similarity,
+        COMMON_HEBREW_WORDS
+    )
 except ImportError:
-    from hebrew_utils import format_hebrew_output
+    from hebrew_utils import (
+        format_hebrew_output, 
+        generate_morphological_variations,
+        get_hebrew_word_frequency_features,
+        cluster_words_by_similarity,
+        calculate_hebrew_similarity,
+        COMMON_HEBREW_WORDS
+    )
 
 try:
     from gensim.models import KeyedVectors
@@ -50,10 +64,20 @@ class HebrewLanguageModel:
         self.is_loaded = False
         self.enable_caching = enable_caching
         
-        # Performance optimization caches
-        self.similarity_cache: Dict[Tuple[str, str], float] = {}
+        # Enhanced caches
         self.vector_cache: Dict[str, Optional[np.ndarray]] = {}
         self.similar_words_cache: Dict[str, List[Tuple[str, float]]] = {}
+        self.morphological_cache: Dict[str, List[str]] = {}  # New cache for morphological variations
+        
+        # Strategy tracking for adaptive multi-strategy generation
+        self.strategy_performance: Dict[str, List[float]] = {
+            'semantic': [],
+            'morphological': [],
+            'frequency': [],
+            'clustering': []
+        }
+        self.current_search_phase = 'exploration'  # 'exploration', 'exploitation', 'convergence'
+        self.tested_word_clusters: Set[str] = set()  # Track tested word cluster representatives
         
         if not GENSIM_AVAILABLE:
             logger.error("Gensim is not available. Please install: pip install gensim")
@@ -515,6 +539,362 @@ class HebrewLanguageModel:
         except Exception as e:
             logger.error(f"Error generating contextual suggestions: {e}")
             return []
+
+    def get_multi_strategy_word_suggestions(
+        self, 
+        current_candidates: List[str], 
+        tested_words: Set[str], 
+        search_phase: str = 'exploration',
+        count: int = 15
+    ) -> List[str]:
+        """
+        Get word suggestions using multiple complementary strategies
+        
+        Combines semantic similarity, morphological patterns, frequency analysis,
+        and clustering to generate diverse, high-quality word candidates.
+        
+        Args:
+            current_candidates: Current best candidate words
+            tested_words: Set of already tested words to avoid duplicates
+            search_phase: Current search phase ('exploration', 'exploitation', 'convergence')
+            count: Total number of suggestions to return
+            
+        Returns:
+            List of strategically selected word suggestions
+        """
+        try:
+            if not self.is_loaded or self.model is None:
+                logger.warning("Model not loaded. Using fallback suggestions.")
+                return self._get_fallback_suggestions(tested_words, count)
+            
+            if not current_candidates:
+                return self._get_exploration_suggestions(tested_words, count)
+            
+            self.current_search_phase = search_phase
+            all_suggestions = {}  # word -> (strategy, score) 
+            
+            # Strategy 1: Enhanced Semantic Similarity
+            semantic_suggestions = self._get_semantic_suggestions(
+                current_candidates, tested_words, count // 2
+            )
+            for word in semantic_suggestions:
+                all_suggestions[word] = ('semantic', self._calculate_semantic_score(word, current_candidates))
+            
+            # Strategy 2: Morphological Pattern Generation
+            morphological_suggestions = self._get_morphological_suggestions(
+                current_candidates, tested_words, count // 3
+            )
+            for word in morphological_suggestions:
+                all_suggestions[word] = ('morphological', self._calculate_morphological_score(word))
+            
+            # Strategy 3: Frequency-Based Prioritization
+            frequency_suggestions = self._get_frequency_based_suggestions(
+                current_candidates, tested_words, count // 4
+            )
+            for word in frequency_suggestions:
+                all_suggestions[word] = ('frequency', self._calculate_frequency_score(word))
+            
+            # Strategy 4: Semantic Clustering (avoid redundancy)
+            if search_phase in ['exploitation', 'convergence']:
+                clustered_suggestions = self._get_clustering_suggestions(
+                    current_candidates, tested_words, count // 4
+                )
+                for word in clustered_suggestions:
+                    all_suggestions[word] = ('clustering', self._calculate_clustering_score(word, current_candidates))
+            
+            # Adaptive strategy weighting based on search phase and performance
+            final_suggestions = self._apply_adaptive_strategy_weighting(
+                all_suggestions, search_phase, count
+            )
+            
+            logger.info(f"Generated {len(final_suggestions)} multi-strategy suggestions "
+                       f"(phase: {search_phase})")
+            
+            return final_suggestions
+            
+        except Exception as e:
+            logger.error(f"Error in multi-strategy word generation: {e}")
+            return self.get_word_suggestions(current_candidates, count)
+    
+    def _get_semantic_suggestions(self, candidates: List[str], tested_words: Set[str], count: int) -> List[str]:
+        """Get suggestions based on semantic similarity"""
+        suggestions = set()
+        
+        for candidate in candidates[:3]:  # Use top 3 candidates
+            similar_words = self.find_most_similar(candidate, topn=30)
+            for word, similarity in similar_words:
+                if similarity > 25.0 and word not in tested_words and word not in suggestions:
+                    suggestions.add(word)
+                    if len(suggestions) >= count:
+                        break
+            if len(suggestions) >= count:
+                break
+        
+        return list(suggestions)[:count]
+    
+    def _get_morphological_suggestions(self, candidates: List[str], tested_words: Set[str], count: int) -> List[str]:
+        """Get suggestions based on morphological patterns"""
+        suggestions = set()
+        
+        for candidate in candidates[:2]:  # Use top 2 for morphological expansion
+            # Check cache first
+            if candidate in self.morphological_cache:
+                variations = self.morphological_cache[candidate]
+            else:
+                variations = generate_morphological_variations(candidate)
+                self.morphological_cache[candidate] = variations
+            
+            # Filter valid words using model vocabulary
+            for variation in variations:
+                if (variation not in tested_words and 
+                    variation not in suggestions and
+                    variation in self.model and  # Must be in vocabulary
+                    self._is_valid_hebrew_word(variation)):
+                    suggestions.add(variation)
+                    if len(suggestions) >= count:
+                        break
+            
+            if len(suggestions) >= count:
+                break
+        
+        return list(suggestions)[:count]
+    
+    def _get_frequency_based_suggestions(self, candidates: List[str], tested_words: Set[str], count: int) -> List[str]:
+        """Get suggestions prioritized by estimated word frequency"""
+        suggestions = []
+        
+        # Start with common words that haven't been tested
+        for word in COMMON_HEBREW_WORDS:
+            if word not in tested_words and len(suggestions) < count // 2:
+                if word in self.model:  # Must be in vocabulary
+                    suggestions.append(word)
+        
+        # Add high-frequency words from vocabulary
+        vocab_words = list(self.model.key_to_index.keys())
+        for word in vocab_words[:2000]:  # Top 2K frequent words
+            if (word not in tested_words and 
+                word not in suggestions and
+                len(word) >= 3 and 
+                self._is_valid_hebrew_word(word)):
+                
+                # Use frequency features to prioritize
+                features = get_hebrew_word_frequency_features(word)
+                if features.get('has_common_prefix', 0) > 0 or features.get('length', 0) <= 5:
+                    suggestions.append(word)
+                    if len(suggestions) >= count:
+                        break
+        
+        return suggestions[:count]
+    
+    def _get_clustering_suggestions(self, candidates: List[str], tested_words: Set[str], count: int) -> List[str]:
+        """Get suggestions that explore different semantic clusters"""
+        suggestions = []
+        
+        # Get potential words from semantic expansion
+        potential_words = set()
+        for candidate in candidates:
+            similar_words = self.find_most_similar(candidate, topn=50)
+            for word, _ in similar_words:
+                if word not in tested_words:
+                    potential_words.add(word)
+        
+        # Cluster potential words and select representatives
+        if potential_words:
+            word_list = list(potential_words)[:100]  # Limit for performance
+            clusters = cluster_words_by_similarity(word_list, similarity_threshold=0.6)
+            
+            for cluster in clusters:
+                if suggestions and len(suggestions) >= count:
+                    break
+                
+                # Select the best representative from each cluster
+                best_word = None
+                best_score = -1
+                
+                for word in cluster:
+                    if word not in tested_words:
+                        # Calculate composite score for cluster representative
+                        semantic_score = self._calculate_semantic_score(word, candidates)
+                        frequency_score = self._calculate_frequency_score(word)
+                        composite_score = 0.7 * semantic_score + 0.3 * frequency_score
+                        
+                        if composite_score > best_score:
+                            best_score = composite_score
+                            best_word = word
+                
+                if best_word and best_word not in suggestions:
+                    suggestions.append(best_word)
+                    # Track that we've explored this cluster
+                    self.tested_word_clusters.add(best_word)
+        
+        return suggestions[:count]
+    
+    def _calculate_semantic_score(self, word: str, candidates: List[str]) -> float:
+        """Calculate semantic relevance score"""
+        if not candidates or word not in self.model:
+            return 0.0
+        
+        total_similarity = 0.0
+        for candidate in candidates:
+            if candidate in self.model:
+                try:
+                    similarity = self.model.similarity(word, candidate)
+                    total_similarity += similarity
+                except KeyError:
+                    continue
+        
+        return total_similarity / len(candidates) if candidates else 0.0
+    
+    def _calculate_morphological_score(self, word: str) -> float:
+        """Calculate morphological pattern quality score"""
+        features = get_hebrew_word_frequency_features(word)
+        
+        # Prefer words with common morphological features
+        score = 0.0
+        score += features.get('has_common_prefix', 0) * 0.3
+        score += features.get('has_common_suffix', 0) * 0.2
+        score += features.get('common_letter_ratio', 0) * 0.3
+        
+        # Length preference
+        if features.get('is_medium', 0) > 0:  # 4-6 letters
+            score += 0.2
+        
+        return min(1.0, score)
+    
+    def _calculate_frequency_score(self, word: str) -> float:
+        """Calculate estimated frequency score"""
+        if not word or word not in self.model:
+            return 0.0
+        
+        # Use position in vocabulary as frequency proxy (lower index = higher frequency)
+        vocab_position = self.model.key_to_index.get(word, len(self.model.key_to_index))
+        vocab_size = len(self.model.key_to_index)
+        
+        # Normalize to 0-1 scale (higher score = more frequent)
+        frequency_score = 1.0 - (vocab_position / vocab_size)
+        
+        # Boost score for common Hebrew patterns
+        features = get_hebrew_word_frequency_features(word)
+        pattern_boost = features.get('common_letter_ratio', 0) * 0.2
+        
+        return min(1.0, frequency_score + pattern_boost)
+    
+    def _calculate_clustering_score(self, word: str, candidates: List[str]) -> float:
+        """Calculate score for semantic cluster diversity"""
+        if not candidates:
+            return 0.5
+        
+        # Reward words that are different from existing candidates
+        min_similarity = 1.0
+        for candidate in candidates:
+            similarity = calculate_hebrew_similarity(word, candidate)
+            min_similarity = min(min_similarity, similarity)
+        
+        # Higher score for more diverse words
+        diversity_score = 1.0 - min_similarity
+        return diversity_score
+    
+    def _apply_adaptive_strategy_weighting(
+        self, 
+        suggestions: Dict[str, Tuple[str, float]], 
+        search_phase: str, 
+        count: int
+    ) -> List[str]:
+        """Apply adaptive weighting based on search phase and strategy performance"""
+        
+        # Define phase-based strategy weights
+        phase_weights = {
+            'exploration': {'semantic': 0.4, 'morphological': 0.3, 'frequency': 0.2, 'clustering': 0.1},
+            'exploitation': {'semantic': 0.5, 'morphological': 0.2, 'frequency': 0.1, 'clustering': 0.2}, 
+            'convergence': {'semantic': 0.6, 'morphological': 0.1, 'frequency': 0.1, 'clustering': 0.2}
+        }
+        
+        weights = phase_weights.get(search_phase, phase_weights['exploration'])
+        
+        # Calculate weighted scores
+        weighted_suggestions = []
+        for word, (strategy, score) in suggestions.items():
+            weight = weights.get(strategy, 0.1)
+            weighted_score = score * weight
+            weighted_suggestions.append((word, weighted_score, strategy))
+        
+        # Sort by weighted score and return top suggestions
+        weighted_suggestions.sort(key=lambda x: x[1], reverse=True)
+        
+        final_suggestions = []
+        strategy_counts = {strategy: 0 for strategy in weights.keys()}
+        
+        # Ensure diversity across strategies
+        for word, score, strategy in weighted_suggestions:
+            if len(final_suggestions) >= count:
+                break
+            
+            # Add word if we haven't exceeded strategy quota
+            max_per_strategy = max(1, count // len(weights))
+            if strategy_counts[strategy] < max_per_strategy:
+                final_suggestions.append(word)
+                strategy_counts[strategy] += 1
+        
+        # Fill remaining slots with highest scoring words
+        remaining = count - len(final_suggestions)
+        if remaining > 0:
+            remaining_words = [word for word, _, _ in weighted_suggestions 
+                             if word not in final_suggestions]
+            final_suggestions.extend(remaining_words[:remaining])
+        
+        logger.debug(f"Strategy distribution: {strategy_counts}")
+        return final_suggestions[:count]
+    
+    def _get_exploration_suggestions(self, tested_words: Set[str], count: int) -> List[str]:
+        """Get initial exploration suggestions when no candidates are available"""
+        suggestions = []
+        
+        # Start with high-frequency common words
+        for word in COMMON_HEBREW_WORDS:
+            if word not in tested_words and len(suggestions) < count:
+                suggestions.append(word)
+        
+        # Add diverse vocabulary words
+        if len(suggestions) < count and self.model:
+            vocab_words = list(self.model.key_to_index.keys())
+            step_size = len(vocab_words) // (count * 2)  # Spread across vocabulary
+            
+            for i in range(0, min(len(vocab_words), count * 10), step_size):
+                word = vocab_words[i]
+                if (word not in tested_words and 
+                    word not in suggestions and
+                    len(word) >= 3 and
+                    self._is_valid_hebrew_word(word)):
+                    suggestions.append(word)
+                    if len(suggestions) >= count:
+                        break
+        
+        return suggestions[:count]
+    
+    def _get_fallback_suggestions(self, tested_words: Set[str], count: int) -> List[str]:
+        """Fallback suggestions when model is not available"""
+        fallback_words = [
+            'שלום', 'אהבה', 'חיים', 'בית', 'משפחה', 'עבודה', 'זמן', 'יום',
+            'לילה', 'אור', 'חושך', 'מים', 'אש', 'רוח', 'שמים', 'אדמה',
+            'אדם', 'איש', 'אישה', 'ילד', 'ילדה', 'אב', 'אם', 'אח', 'אחות'
+        ]
+        
+        suggestions = [word for word in fallback_words 
+                      if word not in tested_words][:count]
+        
+        # Extend with morphological variations if needed
+        if len(suggestions) < count:
+            for word in suggestions[:3]:  # Use first few as seed
+                variations = generate_morphological_variations(word)
+                for variation in variations:
+                    if variation not in tested_words and variation not in suggestions:
+                        suggestions.append(variation)
+                        if len(suggestions) >= count:
+                            break
+                if len(suggestions) >= count:
+                    break
+        
+        return suggestions[:count]
 
     def get_model_stats(self) -> Dict[str, Any]:
         """

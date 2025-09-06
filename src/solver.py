@@ -186,13 +186,37 @@ class SemantleSolver:
         
         return word_list
 
+    def _determine_search_phase(self) -> str:
+        """
+        Determine current search phase based on progress and beam status
+        
+        Returns:
+            Search phase: 'exploration', 'exploitation', or 'convergence'
+        """
+        if not self.beam_searcher.best_candidate:
+            return 'exploration'
+        
+        best_similarity = self.beam_searcher.best_candidate.similarity
+        beam_status = self.beam_searcher.get_beam_status()
+        
+        # Convergence phase: High similarity scores (approaching solution)
+        if best_similarity >= 80.0:
+            return 'convergence'
+        
+        # Exploitation phase: Good progress, focus on promising areas
+        elif best_similarity >= 60.0 and beam_status['recent_improvements'] >= 2:
+            return 'exploitation'
+        
+        # Exploration phase: Early stages or when stuck
+        else:
+            return 'exploration'
+
     def _expand_search_from_candidates(self) -> List[str]:
         """
         Generate new words to explore based on current best candidates
         
-        Uses Word2Vec model for intelligent semantic exploration when available,
-        falls back to basic expansion otherwise. Returns words prioritized by 
-        the similarity score of their parent candidates.
+        Uses multi-strategy word generation with morphological patterns, semantic clustering,
+        frequency-based prioritization, and adaptive strategy weighting.
         
         Returns:
             List of words to explore, prioritized by parent candidate similarity
@@ -200,30 +224,55 @@ class SemantleSolver:
         top_candidates = self.beam_searcher.get_top_candidates(count=3)
         word_tuples = []
         
-        # Strategy 1: Use Word2Vec model for intelligent expansion
+        # Strategy 1: Use enhanced multi-strategy word generation
         if self.language_model and top_candidates:
-            logger.debug("Using Word2Vec model for intelligent word expansion")
+            logger.debug("Using multi-strategy word generation with morphological patterns")
             
-            # Get suggestions from each candidate separately to track parent similarity
+            # Determine current search phase
+            search_phase = self._determine_search_phase()
+            
+            # Get candidate words for the language model
+            candidate_words = [candidate.word for candidate in top_candidates]
+            tested_words = self.beam_searcher.tested_words.copy()
+            
+            # Use new multi-strategy word generation
+            suggested_words = self.language_model.get_multi_strategy_word_suggestions(
+                current_candidates=candidate_words,
+                tested_words=tested_words,
+                search_phase=search_phase,
+                count=10  # Generate more words for better prioritization
+            )
+            
+            # Track parent similarity for priority-based ordering
             for candidate in top_candidates:
-                suggested_words = self.language_model.get_word_suggestions(
-                    [candidate.word], count=5  # Fewer per candidate to maintain quality
+                # Get suggestions specific to this candidate for parent tracking
+                single_suggestions = self.language_model.get_word_suggestions(
+                    [candidate.word], count=3
                 )
                 
-                # Add words with parent similarity tracking
-                for word in suggested_words:
+                for word in single_suggestions:
                     if not self.beam_searcher.is_word_tested(word):
                         word_tuples.append((word, candidate.similarity))
-                        if len(word_tuples) >= 8:  # More words with intelligent selection
+                        if len(word_tuples) >= 8:
                             break
                 
                 if len(word_tuples) >= 8:
                     break
             
+            # Add multi-strategy words with composite parent similarity
+            for word in suggested_words:
+                if not self.beam_searcher.is_word_tested(word) and word not in [w for w, _ in word_tuples]:
+                    # Calculate average parent similarity for multi-strategy words
+                    avg_parent_similarity = sum(c.similarity for c in top_candidates) / len(top_candidates)
+                    word_tuples.append((word, avg_parent_similarity * 0.9))  # Slight penalty for mixed strategy
+                    if len(word_tuples) >= 12:
+                        break
+            
             # If we got good suggestions, prioritize and return them
             if word_tuples:
                 prioritized_words = self._create_prioritized_word_queue(word_tuples)
-                logger.info(f"Generated {len(prioritized_words)} intelligent word suggestions with priority ordering")
+                logger.info(f"Generated {len(prioritized_words)} multi-strategy suggestions "
+                           f"with priority ordering (phase: {search_phase})")
                 return prioritized_words
         
         # Strategy 2: Fallback to basic expansion (expanded word list)
