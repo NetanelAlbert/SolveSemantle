@@ -17,6 +17,7 @@ try:
     from .hebrew_utils import format_hebrew_output
     from .learning_system import ContextualLearningSystem
     from .optimization import SmartTimeoutManager, SemanticGradientOptimizer, EmergencyStrategyManager, ParallelOptimizer
+    from .monitoring import ComprehensiveMonitor
 except ImportError:
     # Fall back to absolute imports (when run as script)
     from api_client import SemantheAPIClient
@@ -25,6 +26,7 @@ except ImportError:
     from hebrew_utils import format_hebrew_output
     from learning_system import ContextualLearningSystem
     from optimization import SmartTimeoutManager, SemanticGradientOptimizer, EmergencyStrategyManager, ParallelOptimizer
+    from monitoring import ComprehensiveMonitor
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -32,11 +34,11 @@ logger = logging.getLogger(__name__)
 
 
 class SemantleSolver:
-    """Main solver for Hebrew Semantle puzzles with advanced optimization"""
+    """Main solver for Hebrew Semantle puzzles with comprehensive monitoring"""
     
-    def __init__(self, beam_width: int = 5, timeout_seconds: int = 300, use_language_model: bool = True, enable_learning: bool = True, enable_optimization: bool = True):
+    def __init__(self, beam_width: int = 5, timeout_seconds: int = 300, use_language_model: bool = True, enable_learning: bool = True, enable_optimization: bool = True, enable_monitoring: bool = True):
         """
-        Initialize the Semantle solver with contextual learning and advanced optimization
+        Initialize the Semantle solver with all enhancements
         
         Args:
             beam_width: Number of top candidates to maintain in beam search
@@ -44,12 +46,14 @@ class SemantleSolver:
             use_language_model: Whether to use Word2Vec model for intelligent exploration
             enable_learning: Whether to enable contextual learning system
             enable_optimization: Whether to enable advanced optimization techniques
+            enable_monitoring: Whether to enable comprehensive monitoring and analysis
         """
         self.beam_width = beam_width
         self.timeout_seconds = timeout_seconds
         self.use_language_model = use_language_model
         self.enable_learning = enable_learning
         self.enable_optimization = enable_optimization
+        self.enable_monitoring = enable_monitoring
         
         # Initialize components
         self.api_client = SemantheAPIClient()
@@ -65,6 +69,12 @@ class SemantleSolver:
             self.learning_system = ContextualLearningSystem()
         else:
             self.learning_system = None
+        
+        # Initialize comprehensive monitoring system
+        if self.enable_monitoring:
+            self.monitor = ComprehensiveMonitor()
+        else:
+            self.monitor = None
         
         # Initialize advanced optimization components
         if self.enable_optimization:
@@ -118,6 +128,8 @@ class SemantleSolver:
             strategy_parts.append("Learning")
         if self.enable_optimization:
             strategy_parts.append("Advanced Optimization")
+        if self.enable_monitoring:
+            strategy_parts.append("Comprehensive Monitoring")
         
         strategy = " + ".join(strategy_parts)
         logger.info(f"Initialized SemantleSolver with {strategy}, beam_width={beam_width}, timeout={timeout_seconds}s")
@@ -151,7 +163,7 @@ class SemantleSolver:
     
     def _test_word(self, word: str, parent_candidate: Optional[str] = None, parent_similarity: float = 0.0, strategy_used: str = 'unknown') -> Optional[float]:
         """
-        Test a single word and record learning patterns
+        Test a single word and record learning patterns and monitoring data
         
         Args:
             word: Hebrew word to test
@@ -178,6 +190,10 @@ class SemantleSolver:
             
             if similarity is not None:
                 logger.info(f"Guess #{self.total_guesses}: {format_hebrew_output(word)} → {similarity:.2f}")
+                
+                # Log to monitoring system
+                if self.monitor and self.enable_monitoring:
+                    self.monitor.log_word_test(word, similarity, strategy_used, parent_similarity)
                 
                 # Record learning pattern if learning is enabled
                 if self.learning_system and parent_candidate:
@@ -476,20 +492,37 @@ class SemantleSolver:
     
     def solve(self) -> Dict[str, Any]:
         """
-        Solve Hebrew Semantle puzzle with advanced optimization techniques
+        Solve Hebrew Semantle puzzle with comprehensive monitoring and all enhancements
         
         Returns:
-            Dictionary with solving results and statistics
+            Dictionary with solving results and detailed analytics
         """
         try:
-            logger.info("Starting Hebrew Semantle solver with advanced optimization...")
+            logger.info("Starting Hebrew Semantle solver with comprehensive monitoring...")
             self.start_time = time.time()
+            
+            # Start monitoring session
+            session_config = {
+                "beam_width": self.beam_width,
+                "timeout_seconds": self.timeout_seconds,
+                "use_language_model": self.use_language_model,
+                "enable_learning": self.enable_learning,
+                "enable_optimization": self.enable_optimization,
+                "enable_monitoring": self.enable_monitoring
+            }
+            
+            if self.monitor and self.enable_monitoring:
+                session_id = self.monitor.start_session(session_config)
+                self.monitor.log_phase_start("initialization")
             
             # Start smart timeout manager
             if self.smart_timeout and self.enable_optimization:
                 self.smart_timeout.start_timing()
             
             # Phase 1: Test initial word list
+            if self.monitor and self.enable_monitoring:
+                self.monitor.log_phase_start("initial_word_testing")
+            
             initial_words = self._get_initial_word_list()
             logger.info(f"Phase 1: Testing {len(initial_words)} initial words")
             
@@ -501,19 +534,28 @@ class SemantleSolver:
                 if self.beam_searcher.is_word_tested(word):
                     continue
                 
-                similarity = self._test_word(word)
+                similarity = self._test_word(word, strategy_used='initial')
                 if similarity is not None:
                     self.beam_searcher.add_candidate(word, similarity)
                     
                     # Update smart timeout with progress
                     if self.smart_timeout and self.enable_optimization:
-                        self.smart_timeout.update_progress(similarity)
+                        extended = self.smart_timeout.update_progress(similarity)
+                        if extended and self.monitor:
+                            self.monitor.log_timeout_extension(
+                                self.smart_timeout.timeout_extensions, 
+                                "initial_progress", 
+                                60.0
+                            )
                     
                     if self.solution_found:
                         break
             
             # Phase 2: Advanced beam search exploration
             if not self.solution_found and self._has_time_remaining():
+                if self.monitor and self.enable_monitoring:
+                    self.monitor.log_phase_start("beam_search_exploration")
+                
                 logger.info("Phase 2: Advanced beam search exploration with optimization")
                 
                 exploration_rounds = 0
@@ -572,7 +614,13 @@ class SemantleSolver:
                             
                             # Update smart timeout with progress
                             if self.smart_timeout and self.enable_optimization:
-                                self.smart_timeout.update_progress(similarity)
+                                extended = self.smart_timeout.update_progress(similarity)
+                                if extended and self.monitor:
+                                    self.monitor.log_timeout_extension(
+                                        self.smart_timeout.timeout_extensions, 
+                                        f"progress_similarity_{similarity:.1f}", 
+                                        60.0
+                                    )
                             
                             if self.solution_found:
                                 break
@@ -585,7 +633,7 @@ class SemantleSolver:
                               f"beam: {status['beam_size']}/{status['beam_width']}, "
                               f"strategy: {status['strategy']}")
             
-            # Compile results with optimization metrics
+            # Compile results with comprehensive analytics
             elapsed_time = self._get_elapsed_time()
             beam_status = self.beam_searcher.get_beam_status()
             
@@ -604,16 +652,19 @@ class SemantleSolver:
                 'beam_width_final': beam_status['beam_width'],
                 'beam_width_range': beam_status['beam_width_range'],
                 'search_strategy': beam_status['strategy'],
-                'strategy_used': f"Word2Vec + Enhanced Beam Search + Learning + Advanced Optimization" if self.language_model and self.enable_learning and self.enable_optimization else 
+                'strategy_used': f"Word2Vec + Enhanced Beam Search + Learning + Advanced Optimization + Comprehensive Monitoring" if all([self.language_model, self.enable_learning, self.enable_optimization, self.enable_monitoring]) else 
+                               f"Word2Vec + Enhanced Beam Search + Learning + Advanced Optimization" if self.language_model and self.enable_learning and self.enable_optimization else 
                                f"Word2Vec + Enhanced Beam Search + Learning" if self.language_model and self.enable_learning else
                                f"Word2Vec + Enhanced Beam Search + Advanced Optimization" if self.language_model and self.enable_optimization else
                                f"Word2Vec + Enhanced Beam Search" if self.language_model else 
+                               f"Enhanced Beam Search + Learning + Advanced Optimization + Comprehensive Monitoring" if all([self.enable_learning, self.enable_optimization, self.enable_monitoring]) else
                                f"Enhanced Beam Search + Learning + Advanced Optimization" if self.enable_learning and self.enable_optimization else
                                f"Enhanced Beam Search + Learning" if self.enable_learning else
                                f"Enhanced Beam Search + Advanced Optimization" if self.enable_optimization else "Enhanced Beam Search",
                 'language_model_loaded': self.language_model is not None,
                 'learning_enabled': self.enable_learning,
                 'optimization_enabled': self.enable_optimization,
+                'monitoring_enabled': self.enable_monitoring,
                 'learning_stats': self.learning_system.get_learning_stats() if self.learning_system else None,
                 'optimization_stats': {
                     'smart_timeout_extensions': self.smart_timeout.timeout_extensions if self.smart_timeout else 0,
@@ -622,7 +673,18 @@ class SemantleSolver:
                 } if self.enable_optimization else None
             }
             
-            # Log final results with optimization info
+            # End monitoring session and get comprehensive metrics
+            if self.monitor and self.enable_monitoring:
+                session_metrics = self.monitor.end_session(results)
+                results['session_metrics'] = {
+                    'session_id': session_metrics.session_id,
+                    'convergence_rate': session_metrics.convergence_rate,
+                    'api_calls_per_similarity_bracket': session_metrics.api_calls_per_similarity_bracket,
+                    'time_distribution': session_metrics.time_distribution,
+                    'milestone_achievements': list(self.monitor.achieved_milestones)
+                }
+            
+            # Log final results with comprehensive info
             if self.solution_found:
                 logger.info(f"🎉 PUZZLE SOLVED! Word: {format_hebrew_output(self.solution_word)} in {self.total_guesses} guesses")
                 logger.info(f"⏱️  Total time: {elapsed_time:.1f}s")
@@ -636,6 +698,9 @@ class SemantleSolver:
                 
                 if self.enable_optimization:
                     logger.info(f"🔧 Optimization: {results['optimization_stats']}")
+                
+                if self.enable_monitoring and 'session_metrics' in results:
+                    logger.info(f"📈 Session: {results['session_metrics']['session_id']}")
             
             return results
             
